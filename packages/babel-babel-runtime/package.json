@@ -1,0 +1,22 @@
+{
+  "name": "@nominy/babel-babel-runtime",
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.mjs"
+    }
+  },
+  "types": "./src/index.d.ts",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --input-type=module -e \"await import('./src/index.mjs')\""
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

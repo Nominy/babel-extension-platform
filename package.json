@@ -1,0 +1,14 @@
+{
+  "name": "babel-extension-platform",
+  "private": true,
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "publish:dry-run": "node scripts/publish-dry-run.mjs"
+  }
+}
