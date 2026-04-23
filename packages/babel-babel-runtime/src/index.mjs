@@ -105,6 +105,30 @@ export async function waitFor(getValue, timeoutMs = 800, intervalMs = 50) {
   return null;
 }
 
+export function registerDomLifecycle(ensureMounted, options = {}) {
+  if (typeof ensureMounted !== 'function') {
+    throw new TypeError('registerDomLifecycle requires an ensureMounted callback.');
+  }
+
+  const root =
+    options.root ||
+    (typeof document !== 'undefined' && document.documentElement ? document.documentElement : null);
+  let observer = null;
+
+  if (root && typeof MutationObserver !== 'undefined') {
+    observer = new MutationObserver(() => {
+      ensureMounted();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+  }
+
+  ensureMounted();
+
+  return () => {
+    observer?.disconnect();
+  };
+}
+
 export function getReactInternalValue(element, prefix) {
   if (!(element instanceof HTMLElement)) {
     return null;

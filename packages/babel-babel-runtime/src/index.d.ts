@@ -5,6 +5,12 @@ export declare function setEditableValue(element: unknown, value: unknown): bool
 export declare function dispatchClick(element: unknown): void;
 export declare function sleep(milliseconds: number): Promise<void>;
 export declare function waitFor<T>(getValue: () => T | null, timeoutMs?: number, intervalMs?: number): Promise<T | null>;
+export declare function registerDomLifecycle(
+  ensureMounted: () => void,
+  options?: {
+    root?: Node;
+  }
+): () => void;
 export declare function getReactInternalValue(element: unknown, prefix: string): unknown;
 export declare function getReactFiber(element: unknown): unknown;
 export declare function parseBabelRoute(input?: string | URL): {
