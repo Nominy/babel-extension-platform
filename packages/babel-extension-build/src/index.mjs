@@ -665,15 +665,15 @@ async function waitForUploadIfNeeded(initialResult, accessToken, statusUrl, inte
 }
 
 function createUploadUrl(publisherId, extensionId) {
-  return `https://www.googleapis.com/upload/chromewebstore/v1.1/items/${extensionId}?publisherId=${encodeURIComponent(publisherId)}`;
+  return `https://chromewebstore.googleapis.com/upload/v2/publishers/${encodeURIComponent(publisherId)}/items/${extensionId}:upload`;
 }
 
 function createPublishUrl(publisherId, extensionId) {
-  return `https://chromewebstore.googleapis.com/v1.1/items/${extensionId}:publish?publisherId=${encodeURIComponent(publisherId)}`;
+  return `https://chromewebstore.googleapis.com/v2/publishers/${encodeURIComponent(publisherId)}/items/${extensionId}:publish`;
 }
 
 function createStatusUrl(publisherId, extensionId) {
-  return `https://chromewebstore.googleapis.com/v1.1/items/${extensionId}?publisherId=${encodeURIComponent(publisherId)}`;
+  return `https://chromewebstore.googleapis.com/v2/publishers/${encodeURIComponent(publisherId)}/items/${extensionId}:fetchStatus`;
 }
 
 function normalizePublishType(value) {
