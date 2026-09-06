@@ -68,14 +68,6 @@ export function createSettingsStore(config) {
   };
 }
 
-export async function loadSettings(store) {
-  return store.loadSettings();
-}
-
-export async function saveSettings(store, value) {
-  return store.saveSettings(value);
-}
-
 async function requestWithFallback(path, init, baseCandidates) {
   if (!baseCandidates.length) {
     throw new Error('Backend URL is required.');

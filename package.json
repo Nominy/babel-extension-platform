@@ -10,6 +10,10 @@
   "scripts": {
     "test": "npm run test --workspaces --if-present",
     "check": "npm run check --workspaces --if-present",
+    "e2e": "node packages/babel-extension-e2e/src/runner.mjs",
+    "e2e:list": "npm run e2e -- --list",
+    "e2e:install:browser": "npm run install:browser --workspace @nominy/babel-extension-e2e",
+    "e2e:install:recreation": "npm run install:recreation --workspace @nominy/babel-extension-e2e",
     "publish:dry-run": "node scripts/publish-dry-run.mjs"
   }
 }

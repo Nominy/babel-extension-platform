@@ -1,0 +1,9 @@
+.recovered-babel-root {
+  min-height: 100vh;
+  background: hsl(var(--background));
+}
+
+.recovered-error {
+  padding: 24px;
+  white-space: pre-wrap;
+}

@@ -114,7 +114,7 @@ export async function packExtension(config) {
 }
 
 export async function runPublishCws(config) {
-  const args = parseFlagArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), 'reject');
   if (args.flags.has('help')) {
     printPublishHelp(config.usageZipLine);
     process.exit(0);
@@ -209,7 +209,7 @@ export async function runPublishCws(config) {
 }
 
 export async function runSetupGithubSecrets(config) {
-  const args = parseSetupArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), 'collect');
   if (args.flags.has('help')) {
     printSetupHelp();
     process.exit(0);
@@ -492,13 +492,18 @@ async function deflate(data) {
   return Buffer.concat(chunks);
 }
 
-function parseFlagArgs(argv) {
+function parseArgs(argv, positionalPolicy) {
   const values = new Map();
   const flags = new Set();
+  const positionals = positionalPolicy === 'collect' ? [] : undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const entry = argv[index];
     if (!entry.startsWith('--')) {
+      if (positionals) {
+        positionals.push(entry);
+        continue;
+      }
       throw new Error(`Unexpected argument: ${entry}`);
     }
     const trimmed = entry.slice(2);
@@ -518,36 +523,7 @@ function parseFlagArgs(argv) {
     index += 1;
   }
 
-  return { values, flags };
-}
-
-function parseSetupArgs(argv) {
-  const values = new Map();
-  const flags = new Set();
-  const positionals = [];
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const entry = argv[index];
-    if (!entry.startsWith('--')) {
-      positionals.push(entry);
-      continue;
-    }
-    const trimmed = entry.slice(2);
-    const equalsIndex = trimmed.indexOf('=');
-    if (equalsIndex >= 0) {
-      values.set(trimmed.slice(0, equalsIndex), trimmed.slice(equalsIndex + 1));
-      continue;
-    }
-    const next = argv[index + 1];
-    if (!next || next.startsWith('--')) {
-      flags.add(trimmed);
-      continue;
-    }
-    values.set(trimmed, next);
-    index += 1;
-  }
-
-  return { values, flags, positionals };
+  return positionals ? { values, flags, positionals } : { values, flags };
 }
 
 function printPublishHelp(usageZipLine) {

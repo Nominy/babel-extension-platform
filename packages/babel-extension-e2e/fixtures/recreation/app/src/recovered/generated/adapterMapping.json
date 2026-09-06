@@ -1,0 +1,183 @@
+{
+  "editorModuleId": "73681",
+  "roles": {
+    "react": {
+      "oldIds": [
+        "37478"
+      ],
+      "ids": [
+        "24289",
+        "70551"
+      ],
+      "exports": [
+        "*"
+      ]
+    },
+    "jsxRuntime": {
+      "oldIds": [
+        "33158"
+      ],
+      "ids": [
+        "92827",
+        "10241"
+      ],
+      "exports": [
+        "Fragment",
+        "jsx",
+        "jsxs"
+      ]
+    },
+    "reactDom": {
+      "oldIds": [],
+      "ids": [
+        "91284",
+        "9580"
+      ],
+      "exports": [
+        "*"
+      ]
+    },
+    "navigation": {
+      "oldIds": [
+        "19062",
+        "13924"
+      ],
+      "ids": [
+        "16372",
+        "23042"
+      ],
+      "exports": [
+        "useRouter",
+        "useParams",
+        "usePathname",
+        "useSearchParams",
+        "notFound"
+      ]
+    },
+    "trpc": {
+      "oldIds": [
+        "65819"
+      ],
+      "ids": [
+        "40734"
+      ],
+      "exports": [
+        "h",
+        "TRPCReactProvider"
+      ]
+    },
+    "worker": {
+      "oldIds": [
+        "8600",
+        "57653"
+      ],
+      "ids": [
+        "3622"
+      ],
+      "exports": [
+        "y"
+      ],
+      "note": "29435.yo forwards this store; 29435.I2 is a distinct signed-contract store and remains native."
+    },
+    "toast": {
+      "oldIds": [
+        "36915"
+      ],
+      "ids": [
+        "36608"
+      ],
+      "exports": [
+        "Am",
+        "pm"
+      ],
+      "optional": true
+    },
+    "nextImage": {
+      "oldIds": [
+        "90771"
+      ],
+      "ids": [
+        "79181"
+      ],
+      "exports": [
+        "default"
+      ]
+    },
+    "analytics": {
+      "oldIds": [
+        "49244"
+      ],
+      "ids": [
+        "57460"
+      ],
+      "exports": [
+        "ng",
+        "z$",
+        "ND",
+        "Tz",
+        "k",
+        "O2"
+      ]
+    },
+    "cn": {
+      "oldIds": [
+        "36460"
+      ],
+      "ids": [
+        "66889"
+      ],
+      "exports": [
+        "cn"
+      ],
+      "optional": true
+    },
+    "clsx": {
+      "oldIds": [
+        "62330"
+      ],
+      "ids": [
+        "76881"
+      ],
+      "exports": [
+        "W"
+      ],
+      "optional": true
+    },
+    "tailwindMerge": {
+      "oldIds": [
+        "76728"
+      ],
+      "ids": [
+        "85780"
+      ],
+      "exports": [
+        "m6"
+      ],
+      "optional": true
+    },
+    "classVarianceAuthority": {
+      "oldIds": [
+        "18991"
+      ],
+      "ids": [
+        "86602"
+      ],
+      "exports": [
+        "j"
+      ],
+      "optional": true
+    },
+    "zustand": {
+      "oldIds": [
+        "32166"
+      ],
+      "ids": [
+        "99250"
+      ],
+      "exports": [
+        "Ue"
+      ],
+      "optional": true
+    }
+  }
+}

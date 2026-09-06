@@ -1,0 +1,22 @@
+{
+  "name": "@nominy/babel-extension-e2e",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=22.14" },
+  "exports": {
+    "./test": "./src/test.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "e2e": "node src/runner.mjs",
+    "e2e:list": "node src/runner.mjs --list",
+    "snapshot:refresh": "node src/recreation-snapshot.mjs refresh",
+    "install:recreation": "npm ci --prefix fixtures/recreation/app --ignore-scripts --no-audit --no-fund",
+    "install:browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

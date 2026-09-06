@@ -21,5 +21,3 @@ export declare function createSettingsStore<T>(config: {
     set: (items: Record<string, unknown>, callback: () => void) => void;
   } | null;
 }): SettingsStore<T>;
-export declare function loadSettings<T>(store: SettingsStore<T>): Promise<T>;
-export declare function saveSettings<T>(store: SettingsStore<T>, value: T): Promise<T>;
