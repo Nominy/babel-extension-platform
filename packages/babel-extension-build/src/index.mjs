@@ -138,6 +138,9 @@ export async function runPublishCws(config) {
     'poll timeout'
   );
 
+  const cancelPending =
+    args.flags.has('cancel-pending') || parseBoolean(args.values.get('cancel-pending') ?? process.env.CWS_CANCEL_PENDING ?? 'false');
+
   const itemTarget = resolveItemTarget(loaded.filePath);
   await ensureReadableFile(zipPath);
 
@@ -148,6 +151,21 @@ export async function runPublishCws(config) {
   const uploadUrl = createUploadUrl(itemTarget.publisherId, itemTarget.extensionId);
   const publishUrl = createPublishUrl(itemTarget.publisherId, itemTarget.extensionId);
   const statusUrl = createStatusUrl(itemTarget.publisherId, itemTarget.extensionId);
+
+  const storeVersions = await fetchStoreVersions({ ...itemTarget, accessToken });
+  assertVersionAboveStore(manifest.version, storeVersions);
+
+  if (cancelPending) {
+    const cancelResult = await requestJson(createCancelSubmissionUrl(itemTarget.publisherId, itemTarget.extensionId), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+    ensureApiSuccess(cancelResult, 'submission cancellation');
+    console.log(`Cancelled pending Chrome Web Store submission for ${itemTarget.extensionId}.`);
+  }
+
   const zipBuffer = await readFile(zipPath);
 
   const uploadResult = await requestJson(uploadUrl, {
@@ -206,6 +224,89 @@ export async function runPublishCws(config) {
 
     return { publisherId, extensionId };
   }
+}
+
+/**
+ * Read the versions the Chrome Web Store currently holds for an item via items.fetchStatus:
+ * the published revision and the revision submitted for review (if any).
+ */
+export async function fetchStoreVersions({ publisherId, extensionId, accessToken }) {
+  const status = await requestJson(createStatusUrl(publisherId, extensionId), {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  ensureApiSuccess(status, 'fetchStatus');
+
+  return {
+    published: describeRevision(status.publishedItemRevisionStatus),
+    submitted: describeRevision(status.submittedItemRevisionStatus),
+    takenDown: status.takenDown === true,
+    warned: status.warned === true
+  };
+
+  function describeRevision(revision) {
+    if (!revision || typeof revision !== 'object') {
+      return null;
+    }
+    const versions = (Array.isArray(revision.distributionChannels) ? revision.distributionChannels : [])
+      .map((channel) => channel?.crxVersion)
+      .filter((value) => typeof value === 'string' && value.length > 0);
+    return { state: revision.state ?? null, versions };
+  }
+}
+
+/**
+ * Abort unless the manifest version is strictly greater than every version the store holds
+ * (published and submitted). Prints both so a rejected upload is never a guess.
+ */
+export function assertVersionAboveStore(manifestVersion, storeVersions, log = console.log) {
+  const describe = (label, revision) =>
+    `${label}: ${revision ? `${revision.versions.join(', ') || '(no package)'}${revision.state ? ` [${revision.state}]` : ''}` : 'none'}`;
+  log(`Chrome Web Store versions -> ${describe('published', storeVersions.published)}; ${describe('submitted', storeVersions.submitted)}; manifest: ${manifestVersion}`);
+  if (storeVersions.takenDown) {
+    console.warn('Chrome Web Store reports this item as taken down. Check the developer dashboard.');
+  }
+  if (storeVersions.warned) {
+    console.warn('Chrome Web Store reports a policy warning for this item. Check the developer dashboard.');
+  }
+
+  const blocking = [];
+  for (const [label, revision] of [['published', storeVersions.published], ['submitted', storeVersions.submitted]]) {
+    for (const version of revision?.versions ?? []) {
+      if (compareExtensionVersions(manifestVersion, version) <= 0) {
+        blocking.push(`${label} ${version}`);
+      }
+    }
+  }
+  if (blocking.length > 0) {
+    throw new Error(
+      `Refusing to upload manifest version ${manifestVersion}: it is not greater than the Chrome Web Store ${blocking.join(' and ')}. Bump the version and retry.`
+    );
+  }
+}
+
+/** Compare dotted extension versions numerically (missing components count as 0). */
+export function compareExtensionVersions(left, right) {
+  const a = parseExtensionVersion(left);
+  const b = parseExtensionVersion(right);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (a[index] ?? 0) - (b[index] ?? 0);
+    if (delta !== 0) {
+      return delta < 0 ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+function parseExtensionVersion(value) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+(\.\d+){0,3}$/.test(text)) {
+    throw new Error(`Unsupported extension version: ${JSON.stringify(value)}`);
+  }
+  return text.split('.').map(Number);
 }
 
 export async function runSetupGithubSecrets(config) {
@@ -536,6 +637,7 @@ Options:
   --file PATH              Alias for --env-file
   --publish-type TYPE      DEFAULT_PUBLISH or STAGED_PUBLISH
   --skip-review            Request skipReview=true
+  --cancel-pending         Cancel the pending submission before uploading (CWS_CANCEL_PENDING=true)
   --poll-interval-ms N     Upload-status polling interval in milliseconds
   --poll-timeout-ms N      Upload-status polling timeout in milliseconds
   --help                   Show this help
@@ -650,6 +752,10 @@ function createPublishUrl(publisherId, extensionId) {
 
 function createStatusUrl(publisherId, extensionId) {
   return `https://chromewebstore.googleapis.com/v2/publishers/${encodeURIComponent(publisherId)}/items/${extensionId}:fetchStatus`;
+}
+
+function createCancelSubmissionUrl(publisherId, extensionId) {
+  return `https://chromewebstore.googleapis.com/v2/publishers/${encodeURIComponent(publisherId)}/items/${extensionId}:cancelSubmission`;
 }
 
 function normalizePublishType(value) {

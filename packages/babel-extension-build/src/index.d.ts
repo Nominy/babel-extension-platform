@@ -49,6 +49,27 @@ export declare function runPublishCws(config: {
   defaultZipPath: (version: string) => string;
   usageZipLine: string;
 }): Promise<void>;
+export interface StoreRevisionVersions {
+  state: string | null;
+  versions: string[];
+}
+export interface StoreVersions {
+  published: StoreRevisionVersions | null;
+  submitted: StoreRevisionVersions | null;
+  takenDown: boolean;
+  warned: boolean;
+}
+export declare function fetchStoreVersions(target: {
+  publisherId: string;
+  extensionId: string;
+  accessToken: string;
+}): Promise<StoreVersions>;
+export declare function assertVersionAboveStore(
+  manifestVersion: string,
+  storeVersions: StoreVersions,
+  log?: (message: string) => void
+): void;
+export declare function compareExtensionVersions(left: string, right: string): -1 | 0 | 1;
 export declare function runSetupGithubSecrets(config: {
   rootDir: string;
 }): Promise<void>;
