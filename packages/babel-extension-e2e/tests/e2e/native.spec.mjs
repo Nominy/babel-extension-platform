@@ -1,4 +1,6 @@
 import { test, expect } from '../../src/test.mjs';
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 import {
   TEXT, SAVE, SUBMIT, rows, row, text, ready, editText, history, rowMenu,
   saved, calls, audio, audioReady, regionTimes, waveformRegion, dragAcross,
@@ -12,6 +14,29 @@ test.use({ extensions: [], scenario: 'baseline' });
 const ORIGINAL = 'Привет, это тестовая запись.';
 const EDITED = 'Привет, это исправленная запись.';
 const ACTION = '22222222-2222-4222-8222-222222222222';
+
+test('shared editor reader gets canonical recordings from the recovered React workbench', async ({ page }) => {
+  await ready(page);
+  const bundled = await build({
+    entryPoints: [fileURLToPath(new URL('../../../babel-babel-runtime/src/index.mjs', import.meta.url))],
+    bundle: true, write: false, format: 'iife', globalName: 'BabelRuntimeTest'
+  });
+  await page.addScriptTag({ content: bundled.outputFiles[0].text });
+  const state = await page.evaluate(() => window.BabelRuntimeTest.readBabelEditorState());
+  expect(state.reviewActionId).toBe(ACTION);
+  expect(state.tracks.map(({ id, label }) => ({ id, label }))).toEqual([
+    { id: 'speaker-1', label: 'Speaker 1' }, { id: 'speaker-2', label: 'Speaker 2' }
+  ]);
+  expect(state.tracks.every(track => track.audioUrl)).toBe(true);
+  // Delete every annotation through native actions. Identity comes from the
+  // workbench's recording props, so it must survive an entirely empty table.
+  while (await rows(page).count()) {
+    const count = await rows(page).count();
+    await rowMenu(page, 0, 'Delete');
+    await expect(rows(page)).toHaveCount(count - 1);
+  }
+  expect(await page.evaluate(() => window.BabelRuntimeTest.readBabelEditorState())).toEqual(state);
+});
 
 test('baseline loads the recovered two-speaker transcript and real local waveforms', async ({ page, babel }) => {
   await ready(page);

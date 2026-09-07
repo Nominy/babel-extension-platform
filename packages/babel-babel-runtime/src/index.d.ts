@@ -13,6 +13,32 @@ export declare function registerDomLifecycle(
 ): () => void;
 export declare function getReactInternalValue(element: unknown, prefix: string): unknown;
 export declare function getReactFiber(element: unknown): unknown;
+export declare function findBabelEditorFiber(documentRef?: Document): unknown;
+export declare function readBabelPlaybackBindings(documentRef?: Document): {
+  reviewActionId: string;
+  waves: Array<{
+    getCurrentTime(): number;
+    getDuration(): number;
+    getPlaybackRate(): number;
+    isPlaying(): boolean;
+  }>;
+  seekToTime: ((seconds: number) => void) | null;
+  togglePlayPause: (() => void) | null;
+  setSpeed: ((speed: string) => void) | null;
+} | null;
+export declare function readBabelEditorState(documentRef?: Document): {
+  reviewActionId: string;
+  tracks: Array<{ id: string; label: string; audioUrl: string }>;
+} | null;
+export declare function readBabelTrackBindings(documentRef?: Document): {
+  reviewActionId: string;
+  tracks: Array<{
+    id: string; label: string; collapsed: boolean; muted: boolean;
+    toggleCollapsed(): void; toggleMuted(): void;
+  }>;
+  filterValue: string | null;
+  setFilter: ((trackId: string) => void) | null;
+} | null;
 export declare function parseBabelRoute(input?: string | URL): {
   pathname: string;
   searchParams: URLSearchParams;
