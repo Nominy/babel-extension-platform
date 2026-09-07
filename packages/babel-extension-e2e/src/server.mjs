@@ -482,7 +482,7 @@ export async function startScenarioServer(options = {}) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Babel-Local-Engine, X-Babel-Request-Id, X-TRPC-Source');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-OpenRouter-Key, Accept, X-Babel-Local-Engine, X-Babel-Request-Id, X-TRPC-Source');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, X-Babel-Request-Id');
     res.setHeader('Cache-Control', 'no-store');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }

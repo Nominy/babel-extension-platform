@@ -17,6 +17,12 @@ test.describe('Review Grader addon', () => {
   test('rejects grades after the transcript changes', async ({ page, babel }) => {
     await babel.setExtensionSettings('review', { backendBaseUrl: babel.apiURL, backendBaseUrlFallbacks: [], refreshTimeoutMs: 4000 });
     await openFeedback(page, babel);
+    const keySettings = await babel.options('review');
+    await keySettings.getByRole('textbox', { name: 'OpenRouter API key' }).fill('sk-or-grader-browser-fixture');
+    await keySettings.getByRole('button', { name: 'Save key', exact: true }).click();
+    await expect(keySettings.getByText('Saved key ending ture.', { exact: false })).toBeVisible();
+    await keySettings.close();
+    await expect(page.getByRole('button', { name: 'OpenRouter', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Grade review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Babel Review Grader', exact: true });
     await dialog.getByRole('button', { name: 'Generate grades', exact: true }).click();
@@ -32,6 +38,12 @@ test.describe('Review Grader addon', () => {
   test('handles backend failures and keeps apply disabled', async ({ page, babel }) => {
     await babel.setExtensionSettings('review', { backendBaseUrl: babel.apiURL, backendBaseUrlFallbacks: [], refreshTimeoutMs: 4000 });
     await openFeedback(page, babel);
+    const keySettings = await babel.options('review');
+    await keySettings.getByRole('textbox', { name: 'OpenRouter API key' }).fill('sk-or-grader-browser-fixture');
+    await keySettings.getByRole('button', { name: 'Save key', exact: true }).click();
+    await expect(keySettings.getByText('Saved key ending ture.', { exact: false })).toBeVisible();
+    await keySettings.close();
+    await expect(page.getByRole('button', { name: 'OpenRouter', exact: true })).toHaveCount(0);
     await babel.control({ routes: { '/api/review/grade': { error: { status: 404, message: 'Not deployed' } } } });
     await page.getByRole('button', { name: 'Grade review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Babel Review Grader', exact: true });
@@ -42,6 +54,12 @@ test.describe('Review Grader addon', () => {
   test('generates, previews, and applies grades while preserving notes', async ({ page, babel }) => {
     await babel.setExtensionSettings('review', { backendBaseUrl: babel.apiURL, backendBaseUrlFallbacks: [], refreshTimeoutMs: 4000 });
     await openFeedback(page, babel);
+    const keySettings = await babel.options('review');
+    await keySettings.getByRole('textbox', { name: 'OpenRouter API key' }).fill('sk-or-grader-browser-fixture');
+    await keySettings.getByRole('button', { name: 'Save key', exact: true }).click();
+    await expect(keySettings.getByText('Saved key ending ture.', { exact: false })).toBeVisible();
+    await keySettings.close();
+    await expect(page.getByRole('button', { name: 'OpenRouter', exact: true })).toHaveCount(0);
     const notes = page.locator('textarea[placeholder="Provide specific feedback..."]');
     await notes.first().fill('Keep this reviewer note.');
     await page.getByRole('button', { name: 'Grade review', exact: true }).click();
