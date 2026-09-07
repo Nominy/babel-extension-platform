@@ -136,11 +136,12 @@ export const test = base.extend({
   extensions: [['helper', 'gold', 'review'], { option: true }],
   reviewFlavor: ['dev', { option: true }],
   nativePermissionDialogs: [false, { option: true }],
+  visibleScrollbars: [false, { option: true }],
   _run: async ({}, use) => use(await runConfiguration()),
   _artifacts: async ({ _run, extensions, reviewFlavor }, use) => use(selectedExtensions(_run, extensions, reviewFlavor)),
   _diagnostics: async ({}, use) => use([]),
 
-  context: async ({ _run, _artifacts, _diagnostics, nativePermissionDialogs }, use, testInfo) => {
+  context: async ({ _run, _artifacts, _diagnostics, nativePermissionDialogs, visibleScrollbars }, use, testInfo) => {
     let profile, fence, context, stopObserving, setupFailure;
     let tracingStarted = false;
     let startupPhase = 'profile-allocation';
@@ -163,7 +164,7 @@ export const test = base.extend({
       ];
       const launchedContext = await chromium.launchPersistentContext(profile, {
         executablePath: _run.browserExecutable, channel: 'chromium', headless: !_run.headed,
-        ignoreDefaultArgs: ['--disable-extensions'],
+        ignoreDefaultArgs: ['--disable-extensions', ...(visibleScrollbars ? ['--hide-scrollbars'] : [])],
         args, proxy: { server: fence.url }, serviceWorkers: 'allow',
         viewport: { width: 1600, height: 1000 }, locale: 'en-US', timezoneId: 'UTC',
         acceptDownloads: true, downloadsPath: path.join(profile, 'downloads')

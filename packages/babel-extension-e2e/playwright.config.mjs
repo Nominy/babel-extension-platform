@@ -8,13 +8,6 @@ const run = process.env.BABEL_E2E_RUN ? JSON.parse(readFileSync(process.env.BABE
 const capabilityTags = getCapabilityTags(run);
 
 export default defineConfig({
-  testDir: repositoryDir,
-  testMatch: [
-    'shared/babel-extension-platform/packages/babel-extension-e2e/tests/e2e/**/*.spec.mjs',
-    'babel-helper-extension-repo/tests/e2e/**/*.spec.mjs',
-    'drafting/gold-drafting-extension/tests/e2e/**/*.spec.mjs',
-    'reviewer/review-interceptor-extension/tests/e2e/**/*.spec.mjs'
-  ],
   grep: capabilityTags.length ? new RegExp(`(?:^|\\s)(?:${capabilityTags.join('|')})(?=\\s|$)`) : undefined,
   fullyParallel: false,
   workers: 1,
@@ -33,8 +26,15 @@ export default defineConfig({
     screenshot: 'off',
     video: 'off'
   },
-  projects: [{
-    name: 'chromium-extensions',
+  projects: [
+    ['native', 'shared/babel-extension-platform/packages/babel-extension-e2e/tests/e2e'],
+    ['helper', 'babel-helper-extension-repo/tests/e2e'],
+    ['gold', 'drafting/gold-drafting-extension/tests/e2e'],
+    ['review', 'reviewer/review-interceptor-extension/tests/e2e']
+  ].map(([name, directory]) => ({
+    name: `chromium-${name}`,
+    testDir: path.join(repositoryDir, directory),
+    testMatch: '**/*.spec.mjs',
     metadata: { ai: run.ai ?? 'placeholder', browserModels: run.browserModels ?? 'placeholder', nano: run.nano ?? 'placeholder', hasSpeechFixtures: Boolean(run.speechFixtures) }
-  }]
+  }))
 });
