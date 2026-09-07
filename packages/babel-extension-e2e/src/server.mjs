@@ -274,6 +274,12 @@ export async function startScenarioServer(options = {}) {
   function sessionById(id) { const session = state.sessions[id]; if (!session) throw new HttpError(404, `Review session not found: ${id}`); return session; }
   function mutableSession(id) { const session = sessionById(id); if (session.finalized) throw new HttpError(409, 'Review session is already finalized'); return session; }
   async function reviewRoute(path, method, body, parsed, req) {
+    if (path === '/api/review/grade' && method === 'POST') {
+      reviewRequest(body);
+      return { reviewActionId: body.reviewActionId, originalActionId: body.original.actionId, version: 'e2e-placeholder', model: 'e2e-placeholder', generatedAt: FIXED_TIME,
+        grades: feedbackCategories.map(([, category], index) => ({ category, score: index % 3 + 1, note: '[E2E fixture] Synthetic grade explanation.', scoreCap: 3,
+          evidence: { count: 2, dominantKinds: ['synthetic'], samples: [{ note: 'Synthetic evidence for browser validation.', before: 'Original example', after: 'Reviewed example' }] } })) };
+    }
     if (path === '/api/review/generate' && method === 'POST') { reviewRequest(body); return generated('review', body, parsed, req); }
     if (path === '/api/review/sessions' && method === 'POST') {
       reviewRequest(body);

@@ -10,6 +10,7 @@ const capabilityTags = getCapabilityTags(run);
 export default defineConfig({
   grep: capabilityTags.length ? new RegExp(`(?:^|\\s)(?:${capabilityTags.join('|')})(?=\\s|$)`) : undefined,
   fullyParallel: false,
+  testIgnore: run.grader ? undefined : '**/grader.spec.mjs',
   workers: 1,
   retries: 0,
   forbidOnly: true,

@@ -17,7 +17,7 @@ on the returned store; there are no standalone settings load/save exports.
 ## Native editor and extension browser E2E
 
 The private E2E package runs the recovered native editor snapshot and the real
-Helper, Gold and Review extensions in isolated persistent Chromium profiles.
+Helper, Gold, Review, and the optional Review Grader addon in isolated persistent Chromium profiles.
 Product compilers run from disposable source copies using their existing
 configuration: no version bump, publication, shipping-manifest edit or user
 Chrome profile is involved. Review dev and release builds have separate test
@@ -38,8 +38,12 @@ npm run e2e:install:recreation
 
 Run `npm ci --ignore-scripts` in each owning repository too:
 `../../babel-helper-extension-repo`, `../../drafting/gold-drafting-extension`
-and `../../reviewer/review-interceptor-extension`. The runner uses their installed
+`../../reviewer/review-interceptor-extension`. The runner uses their installed
 compiler dependencies but writes builds only under a temporary directory.
+
+Review Grader is optional. To include it, install dependencies in the local
+`../../reviewer/babel-review-grader-extension` package and run `npm run e2e -- --grader`.
+Default runs neither build the addon nor discover its specs.
 
 Playwright is pinned to `1.63.0`; its explicit browser installation selects the
 matching full Chromium build. A missing browser/dependency fails with the

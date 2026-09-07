@@ -194,7 +194,8 @@ export const test = base.extend({
           backendBaseUrl: _run.apiURL, l0CustomBaseUrl: _run.apiURL,
           openRouterApiKey: 'e2e-placeholder-not-a-secret', model: _run.openrouterModel ?? 'e2e-placeholder-v1'
         } : name === 'review' ? { backendBaseUrl: _run.apiURL, backendBaseUrlFallbacks: [] } : {};
-        await mergeSettings(context, name, artifact, settings);
+        if (artifact.manifest.permissions?.includes('storage')) await mergeSettings(context, name, artifact, settings);
+        else { const registration = await extensionOptions(context, name, artifact); await registration.close(); }
         if (artifact.manifest.background?.service_worker) {
           await expect.poll(() => context.serviceWorkers().some(worker => worker.url().startsWith(`chrome-extension://${artifact.id}/`)), {
             message: `Awaiting actual ${name} service worker`, timeout: 20_000

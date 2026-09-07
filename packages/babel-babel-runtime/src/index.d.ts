@@ -57,3 +57,4 @@ export declare function createPageBridge(config: {
   post(type: string, payload?: Record<string, unknown>): void;
   subscribe<T>(type: string, listener: (payload: T) => void): () => void;
 };
+export { GRADER_PROTOCOL, GRADE_CATEGORIES, GRADE_PREFIXES, validGradeScores, gradingSnapshotKey, type GradeScore } from './review-grading';

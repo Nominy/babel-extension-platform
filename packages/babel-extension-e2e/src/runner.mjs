@@ -17,6 +17,7 @@ Usage: npm run e2e -- [runner options] [Playwright test filters/options]
   --list                         Discover all specs; no builds, browser or services
   --help                         Show this help without services
   --headed                       Show isolated bundled Chromium (default headless)
+  --grader                       Include the optional local Review Grader addon and its tests
   --ai=placeholder|openrouter|local  Heavy server inference (default placeholder)
   --openrouter-model=ID           Required with --ai=openrouter; OPENROUTER_API_KEY required
   --local-engine-url=URL          Required with --ai=local; existing /v1 engine only
@@ -55,6 +56,7 @@ export function parseOptions(args) {
     if (argument === '--help' || argument === '-h') options.help = true;
     else if (argument === '--list') { options.list = true; playwrightArgs.push(argument); }
     else if (argument === '--headed') options.headed = true;
+    else if (argument === '--grader') options.grader = true;
     else {
       const match = /^--([^=]+)(?:=(.*))?$/.exec(argument);
       if (match && values.has(match[1])) {
@@ -439,7 +441,7 @@ export async function run(args = process.argv.slice(2)) {
   const { options, playwrightArgs } = parseOptions(args);
   if (options.help) { console.log(help); return 0; }
   const capabilityTags = getCapabilityTags(options);
-  const modeEnvironment = { BABEL_E2E_MODE_OPTIONS: JSON.stringify({ ai: options.ai, browserModels: options.browserModels, nano: options.nano, speechFixtures: Boolean(options.speechFixtures) }) };
+  const modeEnvironment = { BABEL_E2E_MODE_OPTIONS: JSON.stringify({ ai: options.ai, browserModels: options.browserModels, nano: options.nano, speechFixtures: Boolean(options.speechFixtures), grader: Boolean(options.grader) }) };
   if (capabilityTags.length) console.log(`Babel E2E local engine is ASR-only. Selected capability union: ${capabilityTags.join(' | ')}. User file/grep filters intersect this scope; no LLM fallback.`);
   if (options.list) return playwright(playwrightArgs, modeEnvironment);
   if (capabilityTags.length && await playwright([...playwrightArgs, '--list'], modeEnvironment) !== 0) {
@@ -455,7 +457,7 @@ export async function run(args = process.argv.slice(2)) {
     const { materializeRecreationSnapshot } = await import('./recreation-snapshot.mjs');
     const app = await materializeRecreationSnapshot({ destinationDir: path.join(work, 'recreation') });
     await linkDependencies(path.join(packageDir, 'fixtures/recreation/app/node_modules'), path.join(app.directory, 'node_modules'));
-    const extensions = await buildExtensions({ directory: work, browserModels: options.browserModels });
+    const extensions = await buildExtensions({ directory: work, browserModels: options.browserModels, grader: options.grader });
     const nanoCapability = options.nano === 'real' ? await assertNanoAvailable(options, work) : undefined;
     const { startScenarioServer } = await import('./server.mjs');
     api = await startScenarioServer({
