@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { createReadStream } from 'node:fs';
@@ -502,6 +503,6 @@ export async function run(args = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
   run().then(code => { process.exitCode = code; }, error => { console.error(`Babel E2E: ${error.stack ?? error.message}`); process.exitCode = 1; });
 }

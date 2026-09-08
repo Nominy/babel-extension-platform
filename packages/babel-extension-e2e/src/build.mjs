@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 export const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const repositoryDir = path.resolve(packageDir, '../../../..');
-const publicKeys = {
+export const publicKeys = {
   grader: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyDUpNv455xEfmxgioSwPARuWAUwcaX8RBO6xeCpjXxSIiosurwqzFw0wTUoLipwB4tfeLi9RVv++tkgkXDlxC2NHao0YDvYZudX12rHjMPaJ4BhvJmNACLaQuq26axPYtwcOIGugpypdrWSLR1em0oui2dTsk588I8HYSIKIPK9r2UamVZDCkn+56vbYKMnNG/EoHngWXOTSjk4xDGKS+BSpG6SRtf1hkjqjsCdZaIqpsGCmjLctshbMl/gifIk0WHl6In//iQLFC/6KWwQHL1kJ8e2bDtu+rYikUB/NYvwZaDneqXVewcft9kOBVWKDQ/YaJ8rKPgEN+sTAPQEznQIDAQAB',
   helper: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlHepCdJVA3w/cRBmuENg1ySVvWj8vOWeoIf2+sHquvwtpYS0UOtbl2yj4NMgB/ySqZEApc85zja2bLkr/bYho6iqPXEtaSug+c7vi6rVTtapCavdfbMmaCVC4SJib4QngQQguzm1mbuf6VsudZRbUa/IGyRNLQKDCvz8XkQSOWIcdOHzqbDakJuDs5BRd510X6aNkK+UFPAHw8+1bc0GEHM+Ll4i2Pwj1K+v55+7PwlV6MXxt56asyXcjMDzzJLc0PGm68O6Wen+5Kr18jIcrZEBVyZ5GONBFeFWnOTUzrZsnPdmtlxvFnB0sG3YNoaiIVQpaV8pxf0qr9S0l+IHEwIDAQAB',
   gold: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtNEgg2K3nELZ0OX2Y5SXCKg8TGzeDlk5ViW1UMeHbfvS/UdxirtBtL1KMZYygYn0hF7/emdkzmsl6A0DeWHYzZ3BQAzslVVQOI3DD4aq7lraZMXxp6WxUBu2lzL+1MV4lSDejoJl6QpRDjbB+BwYegrXQeMAVqODWIU/UcccxBZDmWPNmNdZNI9qI5K57HENOroPU4zMygcmo1mzuby2pEztRjT5dkSJet/y2piBG7BRiHIIf4kwwuJK+SG4C1cpvAWr5VgQ+RrGo6gGI6uOSzQjRV7XE2mqhcLMwnblM142yZLlPduevAhbXezx5XuVXCurI8AqE6Cq305fi42HlwIDAQAB',
