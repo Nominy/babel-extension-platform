@@ -196,17 +196,20 @@ export async function createProviderGateway(options = {}) {
         if (kind === 'local-queue') {
           assert(typeof body.requestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.requestId), 'Invalid local queue request ID.');
           path = `/v1/queue/${encodeURIComponent(body.requestId)}`;
+        } else if (kind === 'local-draft') {
+          assert(body.timing?.tracks?.length === 2 && audioTracks.length === 0, 'Real local drafting requires cached timing and no audio upload.');
+          path = '/v1/draft';
         } else {
-          assert(body.tracks?.length === 2 && audioTracks.length === 2, 'Real local inference requires a payload and exactly two uploaded mono WAV tracks.');
+          assert(body.tracks?.length === 2 && audioTracks.length === 2, 'Real local transcription requires two uploaded mono WAV tracks.');
           form = new FormData();
           form.append('payload', JSON.stringify(body));
           for (const track of audioTracks) {
             assert(body.tracks.some(spec => spec.fieldName === track.fieldName), 'Uploaded audio field is absent from local track specs.');
             form.append(track.fieldName, track.blob, track.filename ?? `${track.fieldName}.wav`);
           }
-          path = kind === 'local-draft' ? '/v1/draft' : '/v1/transcribe';
+          path = '/v1/transcribe';
         }
-        const upstream = await perform(`${base}${path}`, { method: form ? 'POST' : 'GET', headers: requestHeaders, body: form, signal });
+        const upstream = await perform(`${base}${path}`, { method: kind === 'local-queue' ? 'GET' : 'POST', headers: kind === 'local-draft' ? new Headers({ ...Object.fromEntries(requestHeaders), 'Content-Type': 'application/json' }) : requestHeaders, body: kind === 'local-draft' ? JSON.stringify({ timing: body.timing, options: body.options }) : form, signal });
         const payload = JSON.parse(await readBounded(upstream));
         if (upstream.ok && kind !== 'local-queue') validateOutput(kind, payload);
         return response(payload, ai, upstream.status, upstream.headers.has('retry-after') ? { 'retry-after': upstream.headers.get('retry-after') } : {});

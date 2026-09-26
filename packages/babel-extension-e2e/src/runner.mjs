@@ -449,7 +449,7 @@ export async function run(args = process.argv.slice(2)) {
     throw new Error(`No runnable tests or discovery failed for ${capabilityTags.join(' | ')} intersected with the supplied filters. See discovery output above.`);
   }
   await preflight(options);
-  const work = await mkdtemp(path.join(tmpdir(), 'babel-extension-e2e-'));
+  const work = await realpath(await mkdtemp(path.join(tmpdir(), 'babel-extension-e2e-')));
   const artifactDir = path.join(packageDir, 'node_modules/.cache/babel-e2e', new Date().toISOString().replace(/[:.]/g, '-'));
   await mkdir(artifactDir, { recursive: true });
   let api, vite;

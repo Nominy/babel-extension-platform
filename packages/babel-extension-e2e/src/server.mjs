@@ -102,6 +102,7 @@ export async function startScenarioServer(options = {}) {
   const fixtureModels = browserModelFixture();
   const errorModels = browserModelFixture(true);
   const audioCache = new Map();
+  const timingCache = new Map();
   const inFlight = new Set();
   const heldRequests = new Map();
   function buildScenario(name, overrides = {}) {
@@ -116,7 +117,7 @@ export async function startScenarioServer(options = {}) {
     }
     return next;
   }
-  function reset(name, overrides) { const next = buildScenario(name, overrides); generation++; state = next; audioCache.clear(); return state; }
+  function reset(name, overrides) { const next = buildScenario(name, overrides); generation++; state = next; audioCache.clear(); timingCache.clear(); return state; }
   function event(type, data = {}) { state.events.push({ id: ++sequence, type, ...sanitize(data) }); }
   function record(req, path, body, files, procedure) {
     const call = { id: ++sequence, method: req.method, path, ...(procedure ? { procedure } : {}), body: sanitize(body), files: files ?? [], outcome: 'pending' };
@@ -387,7 +388,22 @@ export async function startScenarioServer(options = {}) {
       requireObject(body); if (!Array.isArray(body.groups) || !body.groups.length) throw new HttpError(400, 'Redistribution groups must be a non-empty array');
       return generated('broker-redistribute', body, parsed, req);
     }
-    if (['/v1/draft', '/v1/transcribe', '/api/local-engine/draft'].includes(path) && method === 'POST') {
+    if (path === '/v1/timing/lookup' && method === 'POST') {
+      requireObject(body); requireString(body.taskId, 'taskId');
+      const entry = timingCache.get(body.taskId);
+      if (!entry) throw new HttpError(404, 'Timestamp data is not cached');
+      if (req.headers.authorization !== `Bearer ${entry.token}`) throw new HttpError(403, 'Invalid timing access token');
+      return entry.result ?? await entry.promise;
+    }
+    if (path === '/v1/draft' && method === 'POST') {
+      requireObject(body); requireString(body.taskId, 'taskId');
+      const entry = timingCache.get(body.taskId);
+      if (!entry) throw new HttpError(404, 'Timestamp data is not cached');
+      if (req.headers.authorization !== `Bearer ${entry.token}`) throw new HttpError(403, 'Invalid timing access token');
+      const timing = entry.result ?? await entry.promise;
+      return generated('local-draft', { ...body, timing, tracks: timing.tracks.map(({ lane }, index) => ({ lane, fieldName: `audio:${index + 1}` })) }, parsed, req);
+    }
+    if (path === '/v1/transcribe' && method === 'POST') {
       requireObject(body); requireString(body.taskId, 'taskId');
       if (req.headers['x-babel-local-engine'] !== '1') throw new HttpError(400, 'X-Babel-Local-Engine: 1 is required');
       if (!Array.isArray(body.tracks) || body.tracks.length !== 2 || parsed.audioTracks.length !== 2) throw new HttpError(400, 'L0 requires exactly two WAV tracks');
@@ -400,17 +416,46 @@ export async function startScenarioServer(options = {}) {
       const requestId = req.headers['x-babel-request-id'] ?? `e2e-l0-${++sequence}`;
       const expectedGeneration = generation;
       state.queue[requestId] = { requestId, status: 'queued', position: 1, queuedCount: 1, taskId: body.taskId };
-      if (ai === 'placeholder') {
-        await sleep(control.queuedMs ?? state.controls.queue.queuedMs ?? 150);
-        if (generation !== expectedGeneration) throw new HttpError(409, 'Stale L0 task after reset');
-        Object.assign(state.queue[requestId], { status: 'running', position: 0, queuedCount: 0 });
-        await sleep(control.runningMs ?? state.controls.queue.runningMs ?? 300);
-        if (generation !== expectedGeneration) throw new HttpError(409, 'Stale L0 task after reset');
+      const token = req.headers.authorization?.replace(/^Bearer /, '');
+      if (!token || token.length < 32) throw new HttpError(403, 'Timing access token is required');
+      const existing = timingCache.get(body.taskId);
+      if (existing) {
+        if (existing.token !== token) throw new HttpError(403, 'Invalid timing access token');
+        return existing.result ?? await existing.promise;
       }
-      try {
-        const output = await generated(path.endsWith('/transcribe') ? 'local-transcribe' : 'local-draft', body, parsed, req);
-        Object.assign(state.queue[requestId], { status: 'completed', position: 0, queuedCount: 0 }); return output;
-      } catch (error) { if (generation === expectedGeneration) Object.assign(state.queue[requestId], { status: 'error', error: sanitize(error.message) }); throw error; }
+      const entry = { token, promise: null, result: null };
+      const compute = async () => {
+        try {
+          if (ai === 'placeholder') {
+            await sleep(control.queuedMs ?? state.controls.queue.queuedMs ?? 150);
+            if (generation !== expectedGeneration) throw new HttpError(409, 'Stale L0 task after reset');
+            Object.assign(state.queue[requestId], { status: 'running', position: 0, queuedCount: 0 });
+            await sleep(control.runningMs ?? state.controls.queue.runningMs ?? 300);
+            if (generation !== expectedGeneration) throw new HttpError(409, 'Stale L0 task after reset');
+          }
+          const output = await generated('local-transcribe', body, parsed, req);
+          output.tracks.forEach((track) => {
+            track.segments ??= Array.from(new Set(track.tokens.map((word) => word.id.replace(/:\d+$/, '')))).map((id) => {
+              const words = track.tokens.filter((word) => word.id.startsWith(`${id}:`));
+              const startSeconds = words[0].startSeconds, endSeconds = words.at(-1).endSeconds;
+              return { id, startSeconds, endSeconds, startSample: Math.round(startSeconds * 16000), endSample: Math.round(endSeconds * 16000), sampleRate: 16000 };
+            });
+            track.pcmSha256 ??= '0'.repeat(64);
+            track.sampleRate ??= 16000;
+          });
+          output.accessToken = token;
+          entry.result = output;
+          Object.assign(state.queue[requestId], { status: 'completed', position: 0, queuedCount: 0 });
+          return output;
+        } catch (error) {
+          if (generation === expectedGeneration) Object.assign(state.queue[requestId], { status: 'error', error: sanitize(error.message) });
+          if (timingCache.get(body.taskId) === entry) timingCache.delete(body.taskId);
+          throw error;
+        }
+      };
+      entry.promise = compute();
+      timingCache.set(body.taskId, entry);
+      return entry.promise;
     }
     const queueMatch = /^\/v1\/queue\/([^/]+)$/.exec(path);
     if (queueMatch && method === 'GET') {
@@ -482,7 +527,7 @@ export async function startScenarioServer(options = {}) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-OpenRouter-Key, Accept, X-Babel-Local-Engine, X-Babel-Request-Id, X-TRPC-Source');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-OpenRouter-Key, Accept, X-Babel-Local-Engine, X-Babel-Request-Id, X-TRPC-Source');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, X-Babel-Request-Id');
     res.setHeader('Cache-Control', 'no-store');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -513,7 +558,7 @@ export async function startScenarioServer(options = {}) {
       call = record(req, url.pathname, parsed.body, parsed.files);
       const control = takeControl('routes', url.pathname); await applyControl(control, generation);
       const hold = control.holdResponse === undefined ? undefined : requireString(control.holdResponse, 'control.holdResponse');
-      if (hold !== undefined && !['/v1/draft', '/v1/transcribe', '/api/local-engine/draft'].includes(url.pathname)) throw new HttpError(400, 'Response holds require an L0 JSON inference endpoint');
+      if (hold !== undefined && !['/v1/draft', '/v1/transcribe'].includes(url.pathname)) throw new HttpError(400, 'Response holds require an L0 JSON inference endpoint');
       if (control.disconnect === true) {
         call.outcome = 'network-error';
         call.error = { code: 'E2E_DISCONNECT', message: 'Injected connection close before response headers' };

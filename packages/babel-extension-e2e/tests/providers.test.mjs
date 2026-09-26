@@ -102,28 +102,36 @@ test('OpenRouter model capability preflight fails before any completion request'
   assert.deepEqual(local.calls.map(call => call.path), ['/models']);
 });
 
-test('local real mode uses health and exact multipart/header contracts, preserving queue and admission errors', async t => {
+test('local real mode uploads only transcription audio and drafts from cached timing', async t => {
   const local = await upstream(t, async (req, res, bytes) => {
     if (req.url === '/health') return json(res, { ok: true, device: 'cpu', models: { asr: 'controlled', l2: 'controlled' } });
     if (req.url === '/v1/queue/request-1') return json(res, { requestId: 'request-1', status: 'queued', position: 1, queuedCount: 1 });
     assert.equal(req.headers['x-babel-local-engine'], '1');
     assert.equal(req.headers['x-babel-request-id'], 'request-1');
-    const form = await new Response(bytes, { headers: { 'content-type': req.headers['content-type'] } }).formData();
-    assert.deepEqual(JSON.parse(form.get('payload')), payload);
-    assert.equal(form.get('audio0').name, 'audio0.wav');
-    assert.equal(form.get('audio1').name, 'audio1.wav');
+    if (req.url === '/v1/transcribe') {
+      const form = await new Response(bytes, { headers: { 'content-type': req.headers['content-type'] } }).formData();
+      assert.deepEqual(JSON.parse(form.get('payload')), payload);
+      assert.equal(form.get('audio0').name, 'audio0.wav');
+      assert.equal(form.get('audio1').name, 'audio1.wav');
+    } else {
+      assert.equal(req.url, '/v1/draft');
+      assert.deepEqual(JSON.parse(bytes.toString()), { timing: { taskId: 'task', tracks: [{ lane: 'speaker-1' }, { lane: 'speaker-2' }] } });
+    }
     return json(res, { detail: 'too many in-flight requests' }, 429, { 'retry-after': '5' });
   });
   const gateway = await createProviderGateway({ ai: 'local', localEngineUrl: local.url, environment: new Proxy({}, { get() { throw new Error('credentials forbidden'); } }) });
-  const result = await gateway.request({ kind: 'local-draft', body: payload, audioTracks, headers: { 'X-Babel-Request-Id': 'request-1', Authorization: 'must-not-forward' } });
+  const headers = { 'X-Babel-Request-Id': 'request-1', Authorization: 'must-not-forward' };
+  await gateway.request({ kind: 'local-transcribe', body: payload, audioTracks, headers });
+  const result = await gateway.request({ kind: 'local-draft', body: { timing: { taskId: 'task', tracks: [{ lane: 'speaker-1' }, { lane: 'speaker-2' }] } }, headers });
   assert.equal(result.status, 429);
   assert.equal(result.headers['retry-after'], '5');
   assert.equal(result.body.detail, 'too many in-flight requests');
   assert.equal(local.calls[1].headers.authorization, undefined);
+  assert.equal(local.calls[2].headers.authorization, undefined);
   const queue = await gateway.request({ kind: 'local-queue', body: { requestId: 'request-1' } });
   assert.equal(queue.body.status, 'queued');
   await assert.rejects(gateway.request({ kind: 'review' }), /does not support review/);
-  assert.deepEqual(local.calls.map(call => call.path), ['/health', '/v1/draft', '/v1/queue/request-1']);
+  assert.deepEqual(local.calls.map(call => call.path), ['/health', '/v1/transcribe', '/v1/draft', '/v1/queue/request-1']);
 });
 
 test('unready local health aborts startup and HTTP redirects cannot bypass endpoint restriction', async t => {
