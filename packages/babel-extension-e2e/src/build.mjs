@@ -43,7 +43,7 @@ function compile(directory, args) {
 
 async function copyBuildInputs(source, destination) {
   await mkdir(destination, { recursive: true });
-  for (const name of ['src', 'scripts', 'assets', 'icons', 'options.html', 'manifest.json', 'package.json', 'tsconfig.json', 'esbuild.config.mjs']) {
+  for (const name of ['src', 'scripts', 'assets', 'models', 'icons', 'options.html', 'manifest.json', 'model-release.json', 'package.json', 'tsconfig.json', 'esbuild.config.mjs']) {
     try { await access(path.join(source, name)); } catch { continue; }
     await cp(path.join(source, name), path.join(destination, name), { recursive: true });
   }

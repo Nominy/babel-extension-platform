@@ -338,3 +338,5 @@ export function createPageBridge(config) {
   };
 }
 export { GRADER_PROTOCOL, GRADE_CATEGORIES, GRADE_PREFIXES, validGradeScores, gradingSnapshotKey } from './review-grading.mjs';
+export { AUDIO_ENHANCEMENT_PROTOCOL_VERSION, AUDIO_ENHANCEMENT_STATE_ATTRIBUTE, AUDIO_ENHANCEMENT_STATE_EVENT, AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_ACTIVE_RESPONSE, readAudioEnhancementState, isAudioEnhancementProgress, isAudioEnhancementStrength } from './audio-enhancement.mjs';
+export { createReviewGraderAccess, REVIEW_GRADER_EXTENSION_ID, REVIEW_GRADER_ACCESS_PORT, REVIEW_GRADER_ACCESS_VERSION, REVIEW_GRADER_ACCESS_CAPABILITY, REVIEW_GRADER_ACCESS_TIMEOUT_MS, REVIEW_GRADER_ACCESS_HEARTBEAT_MS, REVIEW_GRADER_ACCESS_RETRY_MS, REVIEW_GRADER_ACCESS_IDLE_MS, REVIEW_GRADER_ACCESS_CLIENT_IDS, isReviewGraderAccessRequest, isReviewGraderAccessReply } from './review-grader-access.mjs';

@@ -159,8 +159,10 @@ export function transcriptionDiff(reference, current) {
   const substitutions = mappings.reduce((n, m) => n + m.substitutions, 0), insertions = mappings.reduce((n, m) => n + m.insertions, 0), deletions = mappings.reduce((n, m) => n + m.deletions, 0);
   return { referenceReviewActionId: reference.actionId, currentReviewActionId: current.actionId, referenceLevel: reference.actionLevel, currentLevel: current.actionLevel,
     speakerDiffs, referenceAnnotations: reference.annotations, currentAnnotations: current.annotations,
-    wer: (substitutions + insertions + deletions) / Math.max(1, totalWords), substitutions, insertions, deletions, totalWords,
-    timestampMetrics: { segments: { details: timestampDetails } } };
+    overallWordErrorRate: (substitutions + insertions + deletions) / Math.max(1, totalWords),
+    totalSubstitutions: substitutions, totalInsertions: insertions, totalDeletions: deletions, totalWords,
+    timestampMetrics: { segments: { details: timestampDetails,
+      avgShiftMs: timestampDetails.length ? timestampDetails.reduce((sum, detail) => sum + detail.avgShiftMs, 0) / timestampDetails.length : null } } };
 }
 
 export function browserModelFixture(inferenceError = false) {

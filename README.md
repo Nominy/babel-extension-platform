@@ -13,6 +13,17 @@ npm run publish:dry-run
 
 Packages are ESM source; there is no separate compile step. Consumers install the local `file:` dependencies from their own directories after this workspace is installed.
 
+## Selected native audio contract
+
+`@nominy/babel-babel-runtime` exports native audio state/capture protocol **v2**. State is published through `data-babel-audio-enhancement` and `babel-audio-enhancement-state`, scoped by review action. `strength` is the committed integer Enhanced percentage0..100; `desiredStrength` is the requested commit, not a held UI preview. Strength0 retains exact Original bytes and an empty `variantKey`; strength100 retains full Enhanced bytes and its model/source hash; intermediate strengths use SHA256 of `['zip-linear-pcm16-v1', fullPairVariantKey, strength]`. Nonzero recognition/draft identities remain separate; Original identity is unchanged. Obsolete mode/desiredMode/selectMode APIs are removed.
+
+Helper's MAIN-world `page.audio-enhancement` service exposes `selectStrength`, owns both native players and retained endpoint bytes, and commits linear PCM blends after sequential paired loads. Active capture is unavailable during mix preparation, pending desired selection, paired switching, or native-buffer mismatch; settled rollback errors expose only the previous committed pair. `selection: 'original'` always returns retained Originals, even during a pending mix. Gold owns the packaged model and caches only the full enhanced pair; no mixed-history cache or inference rerun is added.
+
+Optional `pairedVariantKey` binds the full Enhanced model/source identity to a bridge-verified same-clock pair at every strength. Both source hashes, sample rates, frame counts, WAV headers and byte digests must validate before it is published; reset removes it. Playback timing may use pins from another strength of that exact pair, but strict ASR/timing lookup and active capture remain committed-strength-specific. Playback projection does not publish fake recognition results.
+
+Optional `AudioEnhancementState.progress` carries validated queue/cache-lookup/cache-hit/model/inference/encoding/transfer stages, a nonempty track identity, and exact completed/total window counts. Cache stages require zero inference counts. Progress is not a source revision: timing and waveform caches remain keyed by the selected audio variant. Completion counts certify inference work, not native-player commit. Optional result `cacheStatus`/`cacheMessage` distinguish a validated hit, stored pair, or readable storage warning without changing source identity.
+
+
 ## Browser checks
 
 Install dependencies in Helper, Gold Drafting, and Review Helper before running:
