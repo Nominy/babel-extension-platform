@@ -1,4 +1,9 @@
-export const REVIEW_GRADER_EXTENSION_ID = 'geagfgdjmeojbkbdjmbchkhjjfpaffbe';
+export const REVIEW_GRADER_EXTENSION_ID = 'nkeipbljoogklaflfmkiffhflfdpjefc';
+export const REVIEW_GRADER_TEST_EXTENSION_ID = 'geagfgdjmeojbkbdjmbchkhjjfpaffbe';
+export const REVIEW_GRADER_EXTENSION_IDS = Object.freeze([
+  REVIEW_GRADER_EXTENSION_ID,
+  REVIEW_GRADER_TEST_EXTENSION_ID
+]);
 export const REVIEW_GRADER_ACCESS_PORT = 'babel-review-grader-access-v1';
 export const REVIEW_GRADER_ACCESS_VERSION = 1;
 export const REVIEW_GRADER_ACCESS_CAPABILITY = 'audio-enhancement';
@@ -87,6 +92,16 @@ export function createReviewGraderAccess(runtime = globalThis.chrome?.runtime, o
     }, REVIEW_GRADER_ACCESS_RETRY_MS);
   }
 
+  function nextTarget(targetIndex, remaining) {
+    if (disposed) return;
+    if (remaining > 1) {
+      probe((targetIndex + 1) % REVIEW_GRADER_EXTENSION_IDS.length, remaining - 1);
+    } else {
+      settle(false);
+      retry();
+    }
+  }
+
   function close(current) {
     if (session !== current) return;
     session = null;
@@ -96,8 +111,7 @@ export function createReviewGraderAccess(runtime = globalThis.chrome?.runtime, o
     current.port.onDisconnect.removeListener(current.onDisconnect);
     try { current.port.disconnect(); } catch {}
     setAvailable(false);
-    settle(false);
-    retry();
+    nextTarget(current.targetIndex, current.remaining);
   }
 
   function send(current, type) {
@@ -115,31 +129,38 @@ export function createReviewGraderAccess(runtime = globalThis.chrome?.runtime, o
     }
   }
 
-  function probe() {
+  function probe(targetIndex = 0, remaining = REVIEW_GRADER_EXTENSION_IDS.length) {
     if (disposed || session) return;
     if (typeof runtime?.connect !== 'function') {
       settle(false);
       return;
     }
+    const target = REVIEW_GRADER_EXTENSION_IDS[targetIndex];
     let port;
     let nonce;
     try {
       nonce = nextNonce();
       if (typeof nonce !== 'string' || !/^[0-9a-f]{32}$/.test(nonce)) throw new Error('Invalid nonce');
-      port = runtime.connect(REVIEW_GRADER_EXTENSION_ID, { name: REVIEW_GRADER_ACCESS_PORT });
     } catch {
       settle(false);
       retry();
       return;
     }
+    try {
+      port = runtime.connect(target, { name: REVIEW_GRADER_ACCESS_PORT });
+    } catch {
+      nextTarget(targetIndex, remaining);
+      return;
+    }
     const current = {
-      port, nonce, sequence: 0, awaiting: null, timeout: null, heartbeat: null,
+      port, nonce, targetIndex, remaining, sequence: 0, awaiting: null, timeout: null, heartbeat: null,
       onMessage: null, onDisconnect: null
     };
     session = current;
     current.onMessage = message => {
       if (session !== current) return;
-      if (!isReviewGraderAccessReply(message) || message.nonce !== nonce
+      if (port.sender?.id && port.sender.id !== target
+        || !isReviewGraderAccessReply(message) || message.nonce !== nonce
         || message.sequence !== current.awaiting || message.type !== 'grant') {
         close(current);
         return;
@@ -147,6 +168,8 @@ export function createReviewGraderAccess(runtime = globalThis.chrome?.runtime, o
       timers.clearTimeout(current.timeout);
       current.timeout = null;
       current.awaiting = null;
+      // A healthy lease stays on its provider; a failed lease can try the other pinned target.
+      current.remaining = REVIEW_GRADER_EXTENSION_IDS.length;
       setAvailable(true);
       // Subscribers may synchronously dispose during the grant notification.
       if (session !== current) return;
@@ -168,7 +191,7 @@ export function createReviewGraderAccess(runtime = globalThis.chrome?.runtime, o
     port.onMessage.addListener(current.onMessage);
     port.onDisconnect.addListener(current.onDisconnect);
     if (port.name !== REVIEW_GRADER_ACCESS_PORT
-      || port.sender?.id && port.sender.id !== REVIEW_GRADER_EXTENSION_ID) {
+      || port.sender?.id && port.sender.id !== target) {
       close(current);
       return;
     }

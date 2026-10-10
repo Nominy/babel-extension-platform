@@ -1,4 +1,6 @@
-export declare const REVIEW_GRADER_EXTENSION_ID: 'geagfgdjmeojbkbdjmbchkhjjfpaffbe';
+export declare const REVIEW_GRADER_EXTENSION_ID: 'nkeipbljoogklaflfmkiffhflfdpjefc';
+export declare const REVIEW_GRADER_TEST_EXTENSION_ID: 'geagfgdjmeojbkbdjmbchkhjjfpaffbe';
+export declare const REVIEW_GRADER_EXTENSION_IDS: readonly [typeof REVIEW_GRADER_EXTENSION_ID, typeof REVIEW_GRADER_TEST_EXTENSION_ID];
 export declare const REVIEW_GRADER_ACCESS_PORT: 'babel-review-grader-access-v1';
 export declare const REVIEW_GRADER_ACCESS_VERSION: 1;
 export declare const REVIEW_GRADER_ACCESS_CAPABILITY: 'audio-enhancement';
@@ -59,7 +61,7 @@ export declare function isReviewGraderAccessRequest(value: unknown): value is Re
 export declare function isReviewGraderAccessReply(value: unknown): value is ReviewGraderAccessReply;
 
 export interface ReviewGraderAccess {
-  /** Starts probing; resolves after the initial bounded handshake, false when absent. */
+  /** Tries production then test; resolves after the bounded handshakes, false when both are absent. */
   start(): Promise<boolean>;
   isAvailable(): boolean;
   /** A grant's signal is stable across heartbeats and aborts on disconnect, timeout or disposal. */
