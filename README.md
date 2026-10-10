@@ -23,7 +23,7 @@ Optional `pairedVariantKey` binds the full Enhanced model/source identity to a b
 
 Optional `AudioEnhancementState.progress` carries validated queue/cache-lookup/cache-hit/model/inference/encoding/transfer stages, a nonempty track identity, and exact completed/total window counts. Cache stages require zero inference counts. Progress is not a source revision: timing and waveform caches remain keyed by the selected audio variant. Completion counts certify inference work, not native-player commit. Optional result `cacheStatus`/`cacheMessage` distinguish a validated hit, stored pair, or readable storage warning without changing source identity.
 
-Review Grader access pins two authenticated Chrome identities: Store `nkeipbljoogklaflfmkiffhflfdpjefc` and test `geagfgdjmeojbkbdjmbchkhjjfpaffbe`. `REVIEW_GRADER_EXTENSION_IDS` orders initial admission Store-first. A healthy test lease remains valid; losing either provider aborts its lease and probes the other before bounded retries. Unknown identities, mismatched nonce/sequence and page messages cannot grant access. Real-browser checks cover Store-only, test-only, both and neither; the latter exposes neither enhancement settings nor broker capability.
+Enhancement no longer depends on Review Grader or its version/identity; the obsolete access protocol and provider are removed. New native pairs start at 90% Enhanced / 10% Original. Helper confirms each user transition to 100% before publishing a selection, preserving the current audio until approval. Shared `confirmDialog` accepts an optional abort signal so navigation, superseding choices and teardown remove stale dialogs; modal keyboard events are isolated from page hotkeys.
 
 
 ## Browser checks

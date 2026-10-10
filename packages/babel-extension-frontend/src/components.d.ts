@@ -24,4 +24,4 @@ export declare function createReactComponents<T>(createElement: (...args: any[])
   (props: ComponentStyleProps & { as?: string; className?: string; children?: any; [key: string]: any }) => T
 >;
 
-export declare function confirmDialog(props: { document?: Document; accent?: UiAccent; title?: string; message: string; confirmLabel?: string; cancelLabel?: string }): Promise<boolean>;
+export declare function confirmDialog(props: { document?: Document; accent?: UiAccent; title?: string; message: string; confirmLabel?: string; cancelLabel?: string; signal?: AbortSignal }): Promise<boolean>;

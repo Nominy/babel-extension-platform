@@ -94,8 +94,10 @@ export function createReactComponents(createElement) {
 }
 
 let dialogId = 0;
-export function confirmDialog({ document: doc = document, accent = 'white', title = 'Confirm', message, confirmLabel = 'Confirm', cancelLabel = 'Cancel' }) {
-  const previousFocus = doc.activeElement;
+export function confirmDialog({ document: doc = document, accent = 'white', title = 'Confirm', message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', signal }) {
+  if (signal?.aborted) return Promise.resolve(false);
+  let previousFocus = doc.activeElement;
+  while (previousFocus?.shadowRoot?.activeElement) previousFocus = previousFocus.shadowRoot.activeElement;
   const id = 'bui-confirm-' + ++dialogId;
   const dialog = createComponent('dialog', { document: doc, tag: 'dialog', accent, attrs: { 'aria-labelledby': id, 'aria-describedby': id + '-message' } });
   const heading = createComponent('title', { document: doc, text: title, attrs: { id } });
@@ -109,21 +111,34 @@ export function confirmDialog({ document: doc = document, accent = 'white', titl
   );
   return new Promise(resolve => {
     let settled = false;
+    const keydown = event => {
+      if (!dialog.contains(event.target)) return;
+      event.stopImmediatePropagation();
+      if (event.key !== 'Tab') return;
+      if (event.shiftKey && doc.activeElement === cancel) { event.preventDefault(); confirm.focus(); }
+      else if (!event.shiftKey && doc.activeElement === confirm) { event.preventDefault(); cancel.focus(); }
+    };
+    const keyup = event => {
+      if (dialog.contains(event.target)) event.stopImmediatePropagation();
+    };
     const finish = value => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', abort);
+      doc.removeEventListener('keydown', keydown, true);
+      doc.removeEventListener('keyup', keyup, true);
       dialog.close();
       dialog.remove();
       if (previousFocus?.isConnected) previousFocus.focus();
       resolve(value);
     };
+    const abort = () => finish(false);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) { finish(false); return; }
     cancel.addEventListener('click', () => finish(false));
     confirm.addEventListener('click', () => finish(true));
-    dialog.addEventListener('keydown', event => {
-      if (event.key !== 'Tab') return;
-      if (event.shiftKey && doc.activeElement === cancel) { event.preventDefault(); confirm.focus(); }
-      else if (!event.shiftKey && doc.activeElement === confirm) { event.preventDefault(); cancel.focus(); }
-    });
+    doc.addEventListener('keydown', keydown, true);
+    doc.addEventListener('keyup', keyup, true);
     dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
     dialog.addEventListener('close', () => finish(false));
     doc.body.append(dialog);
