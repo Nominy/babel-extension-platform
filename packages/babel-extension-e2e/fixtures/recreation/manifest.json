@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "private": true,
-  "snapshotVersion": "c0da86fe382b47807c5b411ebc2d02fdb989303eb6f49d7c67fb55197b50bea8",
+  "snapshotVersion": "133dc1ce49bf87347b4fd805396b5c03edb4b267419fbb1ef802dca03162060b",
   "provenance": {
     "formatVersion": 2,
     "sourceKind": "captured-webpack-function-factories",
@@ -11090,9 +11090,9 @@
     },
     {
       "path": "src/recovered/RecoveredBabelApp.tsx",
-      "bytes": 12136,
-      "sha256": "475788265ae0b6dd576093a99be7ccde9ebdc446e4f42addce9ca9986260721c",
-      "sourceSha256": "475788265ae0b6dd576093a99be7ccde9ebdc446e4f42addce9ca9986260721c"
+      "bytes": 12440,
+      "sha256": "abc0c35b3659e24afeea098613c3ebb9f279bbd336ae3193b2f501855d6f3b28",
+      "sourceSha256": "abc0c35b3659e24afeea098613c3ebb9f279bbd336ae3193b2f501855d6f3b28"
     },
     {
       "path": "src/recovered/runtime.ts",

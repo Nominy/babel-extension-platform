@@ -65,7 +65,6 @@ export interface BabelNativeTranscriptBindings {
     [key: string]: unknown;
   };
   controller: {
-    annotationsRef: { current: BabelNativeAnnotation[] };
     selectTurn(annotation: BabelNativeAnnotation): unknown;
     updateText(id: string, text: string): unknown;
     updateTime(id: string, time: { start?: number; end?: number }): unknown;

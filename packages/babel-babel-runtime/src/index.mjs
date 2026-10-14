@@ -370,7 +370,9 @@ export function readBabelTranscriptBindings(documentRef = document) {
   for (let hook = editor.memoizedState; hook; hook = hook.next) {
     const state = hook.memoizedState;
     const value = Array.isArray(state) ? state[0] : state;
-    if (Array.isArray(value?.annotationsRef?.current) && typeof value.selectTurn === 'function' &&
+    // Match owned native operations, not callable RPC proxies or private refs.
+    if (value && typeof value === 'object' && Object.hasOwn(value, 'split') &&
+      typeof value.selectTurn === 'function' && typeof value.updateTime === 'function' &&
       typeof value.updateText === 'function' && typeof value.split === 'function' &&
       typeof value.remove === 'function' && typeof value.toggleWarningAssertion === 'function') {
       controller = value;

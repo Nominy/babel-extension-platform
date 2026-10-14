@@ -219,12 +219,15 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
   const pathname = new URL(route, window.location.origin).pathname;
   return (
     <>
-      <main ref={root} className="recovered-babel-root" data-recovered-scenario={scenario.scenario} data-recovered-module={RECOVERED_EDITOR_MODULE_ID} data-recovered-ready={route !== "/"}>
-        <ModelComparisonLegend scenario={scenario} />
-        {pathname === "/projects" ? <ProjectsRoute scenario={scenario} /> : route === "/" ? <p role="status">Opening local scenario…</p> : pathname === scenario.page?.path || pathname.startsWith("/transcription/") ? (
-          <PageController key={revision} project={scenario.project} {...scenario.pageProps} showTaskLookupModal={scenario.page?.showTaskLookupModal ?? scenario.showTaskLookupModal ?? scenario.pageProps?.showTaskLookupModal ?? false} />
-        ) : <section role="alert"><h1>Local route not found</h1><a href="/projects" onClick={(event) => { event.preventDefault(); navigateRecovered("/projects"); }}>Projects</a></section>}
-      </main>
+      <div data-recovered-shell style={{ display: "flex", minHeight: "100svh" }}>
+        <aside aria-label="Local sidebar" style={{ width: 64, flexShrink: 0 }} />
+        <main ref={root} className={`recovered-babel-root flex-1${pathname.startsWith("/transcription/") ? " relative flex min-h-svh flex-col h-svh overflow-hidden" : ""}`} data-recovered-scenario={scenario.scenario} data-recovered-module={RECOVERED_EDITOR_MODULE_ID} data-recovered-ready={route !== "/"}>
+          <ModelComparisonLegend scenario={scenario} />
+          {pathname === "/projects" ? <ProjectsRoute scenario={scenario} /> : route === "/" ? <p role="status">Opening local scenario…</p> : pathname === scenario.page?.path || pathname.startsWith("/transcription/") ? (
+            <PageController key={revision} project={scenario.project} {...scenario.pageProps} showTaskLookupModal={scenario.page?.showTaskLookupModal ?? scenario.showTaskLookupModal ?? scenario.pageProps?.showTaskLookupModal ?? false} />
+          ) : <section role="alert"><h1>Local route not found</h1><a href="/projects" onClick={(event) => { event.preventDefault(); navigateRecovered("/projects"); }}>Projects</a></section>}
+        </main>
+      </div>
       <Toaster />
     </>
   );
