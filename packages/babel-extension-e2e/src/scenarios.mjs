@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import modelRelease from '../../../../../drafting/gold-drafting-extension/model-release.json' with { type: 'json' };
+
+export const BROWSER_MODEL_BASE_PATH = new URL(modelRelease.modelBaseUrl).pathname;
 
 export const IDS = Object.freeze({
   project: '0bf29f0c-371a-506a-8b77-5fffd14e5762', queue: 'f95babcc-8681-521c-a39f-66454a16347f',
@@ -74,7 +77,7 @@ export function createScenario(name = 'baseline', overrides = {}, baseURL = '') 
   const readOnly = name === 'readonly' || name === 'diff';
   if (readOnly) action.actionDecision = 'pass';
   const state = {
-    scenario: name, project: { projectId: IDS.project, category: 'transcription', projectName: 'RU-tx-gold-non-bg', name: 'RU-tx-gold-non-bg' },
+    scenario: name, project: { projectId: IDS.project, category: 'transcription', productKind: 'transcription', projectName: 'RU-tx-gold-non-bg', name: 'RU-tx-gold-non-bg' },
     worker: { id: IDS.worker, name: 'Synthetic E2E Worker' },
     permissions: [{ reviewQueueId: IDS.queue, level: 2, tag: 'chunked' }, { reviewQueueId: `${IDS.queue.slice(0, -1)}8`, level: 2, tag: 'stitched' }],
     projectId: IDS.project, queueId: IDS.queue, action, referenceAction, readOnly, showTaskLookupModal: false, noWork: name === 'empty',
@@ -166,9 +169,30 @@ export function transcriptionDiff(reference, current) {
 }
 
 export function browserModelFixture(inferenceError = false) {
-  const paths = ['asr/v3_ctc.onnx', 'asr/v3_ctc.yaml', 'punctuation/model.int8.onnx', 'punctuation/config.json', 'punctuation/tokenizer.json', 'punctuation/tokenizer_config.json', 'punctuation/special_tokens_map.json', 'punctuation/vocab.txt'];
-  const files = new Map(paths.map((path) => [path, Buffer.from(path.endsWith('.json') ? '{"e2eFixture":true,"notAnInferenceModel":true}' : `E2E transport fixture only; not an inference model: ${path}\n`)]));
+  const paths = ['asr/v3_ctc.onnx', 'asr/v3_ctc.yaml', 'punctuation/context.fp16.onnx', 'punctuation/denoise.fp16.onnx',
+    'punctuation/c-denoise.json', 'punctuation/gpu-placement.json', 'punctuation/config.json',
+    'punctuation/tokenizer.json', 'punctuation/tokenizer_config.json', 'punctuation/special_tokens_map.json', 'punctuation/vocab.txt'];
+  const files = new Map(paths.map((path) => [path, Buffer.from(path.endsWith('.json')
+    ? JSON.stringify({ e2eFixture: true, notAnInferenceModel: true, path })
+    : `E2E transport fixture only; not an inference model: ${path}\n`)]));
   if (inferenceError) files.set('asr/v3_ctc.onnx', Buffer.from('e2e-model-inference-error: explicit deterministic heavyweight boundary failure'));
   const records = [...files].map(([path, data]) => ({ path, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') }));
-  return { files, manifest: { schema: 'babel-browser-model-bundle-v1', targetBytes: 500000000, pass: true, e2eFixture: true, notAnInferenceModel: true, ...(inferenceError ? { negativeFixture: 'invalid-inference-model' } : {}), totalBytes: records.reduce((n, f) => n + f.bytes, 0), files: records } };
+  // Manifest validation, byte hashing, staged cache installation and invalidation
+  // remain real. These marked values are test inputs, not numerical model evidence.
+  const fixtureEvidence = { id: 'e2e-placeholder-no-numerical-inference', pass: true,
+    comparisons: { placeholder: { pass: true, finite: true, maxAbs: 0, rmse: 0 } } };
+  return { files, manifest: {
+    schema: modelRelease.bundleSchema, releaseId: modelRelease.id, targetBytes: 1_500_000_000, pass: true,
+    e2eFixture: true, notAnInferenceModel: true,
+    ...(inferenceError ? { negativeFixture: 'invalid-inference-model' } : {}),
+    source: {
+      asrCheckpointSha256: '02cea9973d0e839f6a3eeca101b83a93f93a066c2da2e3ebfa176d57e61d84d3',
+      cDenoiseCheckpointSha256: '0a01c3535fb66627b13f266bc59ab7b95c2aa85f7413a051d1e17294515ded5a',
+      baseModelFiles: { 'e2e-placeholder': createHash('sha256').update('not a model').digest('hex') },
+    },
+    validation: { numericExport: { e2eFixture: true, pass: true,
+      reportSha256: createHash('sha256').update(JSON.stringify(fixtureEvidence)).digest('hex'),
+      limits: { e2eFixture: true }, cases: [fixtureEvidence], asr: [fixtureEvidence] } },
+    totalBytes: records.reduce((n, f) => n + f.bytes, 0), files: records,
+  } };
 }

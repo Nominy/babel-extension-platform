@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { browserModelFixture } from './scenarios.mjs';
 
 export const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const repositoryDir = path.resolve(packageDir, '../../../..');
@@ -76,6 +77,18 @@ export async function buildExtensions({ directory, browserModels = 'placeholder'
       const { browserInferencePlaceholderSource } = await import('./providers.mjs');
       const inference = path.join(work, 'src/core/local-model-runtime.ts');
       await writeFile(inference, browserInferencePlaceholderSource(await readFile(inference, 'utf8')));
+      // Only the disposable test build accepts these explicitly synthetic graph
+      // hashes. Production release identities and verification remain untouched.
+      const releaseFile = path.join(work, 'model-release.json');
+      const release = JSON.parse(await readFile(releaseFile, 'utf8'));
+      const fixture = browserModelFixture();
+      release.e2eFixture = true;
+      release.graphs = Object.fromEntries(Object.keys(release.graphs).map(graph => {
+        const file = fixture.manifest.files.find(file => file.path === graph);
+        if (!file) throw new Error(`Missing E2E graph fixture: ${graph}`);
+        return [graph, file.sha256];
+      }));
+      await writeFile(releaseFile, JSON.stringify(release, null, 2));
     }
     if (name === 'review') {
       output.review = {};

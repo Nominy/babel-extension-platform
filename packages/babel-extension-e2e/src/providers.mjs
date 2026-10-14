@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 
 export const PLACEHOLDER_MODEL = 'e2e-placeholder-v1';
 const OPENROUTER = 'https://openrouter.ai/api/v1';
@@ -235,17 +236,26 @@ export async function createProviderGateway(options = {}) {
 
 /** Replace only heavyweight model execution; preserve native decode, DSP, segmentation and offscreen transport. */
 export function browserInferencePlaceholderSource(source) {
-  const replaceFunction = (input, start, next, replacement) => {
-    const from = input.indexOf(start);
-    const to = input.indexOf(next, from + start.length);
-    assert(from >= 0 && to > from && input.indexOf(start, from + start.length) < 0, `Cannot locate unique browser inference seam: ${start}`);
-    return input.slice(0, from) + replacement + '\n\n' + input.slice(to);
+  const requireGold = createRequire(new URL('../../../../../drafting/gold-drafting-extension/package.json', import.meta.url));
+  const ts = requireGold('typescript');
+  const file = ts.createSourceFile('local-model-runtime.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  assert(file.parseDiagnostics.length === 0, 'Cannot parse the current browser inference runtime.');
+  const replacements = new Map();
+  const replaceFunction = (name, replacement) => {
+    const declarations = file.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    assert(declarations.length === 1, `Cannot locate unique browser inference seam: ${name}`);
+    const node = declarations[0];
+    replacements.set(node.getStart(file), { end: node.end, replacement });
   };
-  let output = replaceFunction(source, 'async function predictPunctuation(', 'function capitalizeLexicalToken(', `async function predictPunctuation(words: readonly string[]): Promise<PunctuationLabel[]> {
-  await cachedArrayBuffer(PUNCTUATION_MODEL_PATH);
-  return words.map((_, index) => index === words.length - 1 ? 'PERIOD' : 'O') as PunctuationLabel[];
+  replaceFunction('recognizeAndLabelAudio', `async function recognizeAndLabelAudio(audio: PreparedLocalAudio): Promise<SampleRecognition & { labelIds: Uint8Array; ranges: ReturnType<typeof buildActivityRows> }> {
+  const recognized = await recognizeActivitySegments(audio.raw, segmentSamplesByActivity(audio.activity));
+  await cachedArrayBuffer(PUNCTUATION_CONTEXT_PATH);
+  await cachedArrayBuffer(PUNCTUATION_DENOISE_PATH);
+  const labelIds = new Uint8Array(recognized.tokens.length);
+  for (const range of recognized.ranges) if (range.wordEnd > range.wordStart) labelIds[range.wordEnd - 1] = 2;
+  return { ...recognized, labelIds };
 }`);
-  output = replaceFunction(output, 'async function recognizeSampleChunk(', 'function isOverlapDuplicate(', `async function recognizeSampleChunk(samples: Float32Array): Promise<SampleRecognition> {
+  replaceFunction('recognizeSampleChunk', `async function recognizeSampleChunk(samples: Float32Array): Promise<SampleRecognition> {
   const fixture = await cachedArrayBuffer(ASR_MODEL_PATH);
   if (new TextDecoder().decode(new Uint8Array(fixture, 0, Math.min(64, fixture.byteLength))).startsWith('e2e-model-inference-error')) {
     throw new Error('[E2E placeholder] Controlled model inference failure.');
@@ -260,9 +270,35 @@ export function browserInferencePlaceholderSource(source) {
   });
   return { durationSeconds, tokens };
 }`);
-  output = replaceFunction(output, 'function modelsSummary()', 'export async function generateLocalL0Timing(', `function modelsSummary(): Record<string, unknown> {
+  // This is a marked test-boundary response, not evidence of GPU execution.
+  // Only disposable placeholder builds install it; real-model runs use the
+  // unmodified runtime's hardware/dispatch attestation and release hashes.
+  replaceFunction('executionDiagnostic', `function executionDiagnostic(): LocalExecutionDiagnostic {
+  if (!currentBundleIdentity) throw new Error('[E2E placeholder] Missing verified fixture identity.');
+  const diagnostic = {
+    e2eFixture: true, notGpuExecution: true,
+    provider: 'webgpu', shaderF16: true, denoiseSteps: 4, neuralCpuFallback: false,
+    asrCheckpointSha256: ASR_SOURCE_SHA, cDenoiseCheckpointSha256: C_DENOISE_SOURCE_SHA,
+    bundleIdentity: currentBundleIdentity,
+    adapter: { vendor: '[E2E placeholder]', architecture: 'test-only', device: 'no GPU execution',
+      description: 'Synthetic inference boundary; not hardware evidence', isFallbackAdapter: false,
+      shaderF16: true, maxBufferSize: 0, maxStorageBufferBindingSize: 0 },
+    placementAudit: { method: 'sha256-bound-source-nodes-and-webgpu-dispatch-profile',
+      graphOptimizations: 'disabled', hostMetadataAllowed: true, cpuAttemptsPrevented: false,
+      graphs: Object.entries(INFERENCE_RELEASE.graphs).map(([path, sha256]) => ({
+        path, sha256, e2eFixture: true, requiredGpuNodes: 1, verifiedGpuNodes: 1,
+        gpuPrograms: 1, verifiedRuns: path === PUNCTUATION_DENOISE_PATH ? 4 : 1,
+      })) },
+  };
+  return diagnostic as unknown as LocalExecutionDiagnostic;
+}`);
+  replaceFunction('modelsSummary', `function modelsSummary(): Record<string, unknown> {
   return { asr: { name: '${PLACEHOLDER_MODEL}' }, l2: { name: '${PLACEHOLDER_MODEL}' } };
 }`);
+  let output = source;
+  for (const [start, { end, replacement }] of [...replacements].sort(([left], [right]) => right - left)) {
+    output = output.slice(0, start) + replacement + output.slice(end);
+  }
   return output;
 }
 

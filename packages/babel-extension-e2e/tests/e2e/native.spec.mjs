@@ -1,8 +1,10 @@
 import { test, expect } from '../../src/test.mjs';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
+import { writeFile } from 'node:fs/promises';
 import {
-  TEXT, SAVE, SUBMIT, rows, row, text, ready, editText, history, rowMenu,
+  TEXT, SAVE, SUBMIT, rows, row, text, ready, fillText, editText, history, rowMenu,
+  readText, readTexts, speaker, startTime, focusTranscript, transcriptScroll, listenThrough,
   saved, calls, audio, audioReady, regionTimes, waveformRegion, dragAcross,
   feedbackCategoryKeys, feedbackComment, OTHER_FEEDBACK, feedbackDraftResponses, submitReview,
   openFeedback, seedFeedbackDraft, coldFeedbackReload, expectFeedbackRestored,
@@ -15,13 +17,17 @@ const ORIGINAL = 'Привет, это тестовая запись.';
 const EDITED = 'Привет, это исправленная запись.';
 const ACTION = '22222222-2222-4222-8222-222222222222';
 
-test('shared editor reader gets canonical recordings from the recovered React workbench', async ({ page }) => {
-  await ready(page);
+async function installSharedRuntime(page) {
   const bundled = await build({
     entryPoints: [fileURLToPath(new URL('../../../babel-babel-runtime/src/index.mjs', import.meta.url))],
     bundle: true, write: false, format: 'iife', globalName: 'BabelRuntimeTest'
   });
   await page.addScriptTag({ content: bundled.outputFiles[0].text });
+}
+
+test('shared editor reader gets canonical recordings from the recovered React workbench', async ({ page }) => {
+  await ready(page);
+  await installSharedRuntime(page);
   const state = await page.evaluate(() => window.BabelRuntimeTest.readBabelEditorState());
   expect(state.reviewActionId).toBe(ACTION);
   expect(state.tracks.map(({ id, label }) => ({ id, label }))).toEqual([
@@ -29,7 +35,7 @@ test('shared editor reader gets canonical recordings from the recovered React wo
   ]);
   expect(state.tracks.every(track => track.audioUrl)).toBe(true);
   // Delete every annotation through native actions. Identity comes from the
-  // workbench's recording props, so it must survive an entirely empty table.
+  // workbench's recording props, so it must survive an entirely empty transcript.
   while (await rows(page).count()) {
     const count = await rows(page).count();
     await rowMenu(page, 0, 'Delete');
@@ -38,18 +44,131 @@ test('shared editor reader gets canonical recordings from the recovered React wo
   expect(await page.evaluate(() => window.BabelRuntimeTest.readBabelEditorState())).toEqual(state);
 });
 
+test('shared turn bindings retain pending raw text, native undo and full identity through filtering', async ({ page, babel }) => {
+  await ready(page);
+  await installSharedRuntime(page);
+  const original = await page.evaluate(() => window.BabelRuntimeTest.readBabelTranscriptBindings().annotations[0]);
+  await text(page, 0).click();
+  await page.evaluate(() => {
+    window.pendingTurnObservation = null;
+    document.addEventListener('beforeinput', function observe(event) {
+      if (!event.target.closest('[data-slate-editor]')) return;
+      document.removeEventListener('beforeinput', observe, true);
+      setTimeout(() => {
+        const state = window.BabelRuntimeTest.readBabelTranscriptBindings();
+        window.pendingTurnObservation = { committed: state.annotations[0].content, pending: state.pendingTextById['row-1'] };
+      }, 0);
+    }, true);
+  });
+  await fillText(text(page, 0), 'Новый [смех] текст.');
+  await expect.poll(() => page.evaluate(() => window.pendingTurnObservation))
+    .toEqual({ committed: original.content, pending: 'Новый [смех] текст.' });
+  await expect.poll(() => page.evaluate(() => window.BabelRuntimeTest.readBabelTranscriptBindings().annotations[0].content))
+    .toBe('Новый [смех] текст.');
+  await text(page, 0).press('Enter');
+  await page.evaluate(() => window.BabelRuntimeTest.readBabelTranscriptBindings().history.undo());
+  await expect.poll(() => page.evaluate(() => window.BabelRuntimeTest.readBabelTranscriptBindings().annotations[0])).toEqual(original);
+  await page.evaluate(() => window.BabelRuntimeTest.readBabelTrackBindings().setFilter('speaker-2'));
+  await expect(rows(page)).toHaveCount(2);
+  expect(await page.evaluate(() => window.BabelRuntimeTest.readBabelTranscriptBindings().annotations.map(row => row.id)))
+    .toEqual(['row-1', 'row-2', 'row-3', 'row-4']);
+  await babel.reset('readonly');
+  await ready(page);
+  await installSharedRuntime(page);
+  expect(await page.evaluate(() => window.BabelRuntimeTest.readBabelTranscriptBindings().readOnly)).toBe(true);
+  expect(await page.evaluate(() => window.BabelRuntimeTest.readBabelSessionState()))
+    .toEqual({ reviewActionId: ACTION, readOnly: true });
+  await expect(page.locator('[data-slate-editor], [aria-label="Edit turn text"]')).toHaveCount(0);
+});
+
+test('shared session and playback hot-path measurement preserves native clocks and filters', async ({ page }, testInfo) => {
+  await ready(page);
+  await installSharedRuntime(page);
+  await text(page, 0).click();
+  const measurement = await page.evaluate(() => {
+    const runtime = window.BabelRuntimeTest;
+    const full = runtime.readBabelTranscriptBindings();
+    const fast = runtime.readBabelSessionState();
+    runtime.readBabelPlaybackBindings();
+    const turn = full.annotations.find(annotation => annotation.type === 'transcription');
+    const identity = runtime.readBabelTurnIdentity(turn.id);
+    const querySelectorAll = document.querySelectorAll;
+    let annotationEnumerations = 0;
+    document.querySelectorAll = function (selector) {
+      if (selector.includes('section[data-annotation-id]')) annotationEnumerations++;
+      return querySelectorAll.call(this, selector);
+    };
+    const measure = operation => {
+      const batches = [];
+      for (let batch = 0; batch < 5; batch++) {
+        const start = performance.now();
+        for (let read = 0; read < 100; read++) operation();
+        batches.push((performance.now() - start) / 100);
+      }
+      batches.sort((a, b) => a - b);
+      return { medianMsPerRead: batches[2], maxBatchMsPerRead: batches[4], reads: 500 };
+    };
+    try {
+      return {
+        equivalentSession: full.reviewActionId === fast.reviewActionId && full.readOnly === fast.readOnly,
+        equivalentTurn: identity.reviewActionId === full.reviewActionId &&
+          identity.annotationId === turn.id && identity.processedRecordingId === turn.processedRecordingId &&
+          identity.startSeconds === turn.startTimeInSeconds && identity.endSeconds === turn.endTimeInSeconds &&
+          identity.readOnly === full.readOnly,
+        fullTranscript: measure(() => runtime.readBabelTranscriptBindings()),
+        sessionOnly: measure(() => runtime.readBabelSessionState()),
+        playback: measure(() => runtime.readBabelPlaybackBindings()),
+        turnIdentity: measure(() => runtime.readBabelTurnIdentity(turn.id)),
+        annotationEnumerations
+      };
+    } finally {
+      document.querySelectorAll = querySelectorAll;
+    }
+  });
+  expect(measurement.equivalentSession).toBe(true);
+  expect(measurement.equivalentTurn).toBe(true);
+  expect(measurement.annotationEnumerations).toBe(0);
+  await page.evaluate(() => {
+    const playback = window.BabelRuntimeTest.readBabelPlaybackBindings();
+    playback.setSpeed('1.5');
+    playback.seekToTime(1);
+  });
+  await expect.poll(async () => (await audio(page)).map(track => track.currentTime)).toEqual([1, 1]);
+  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([1.5, 1.5]);
+  await page.getByRole('button', { name: 'Play all tracks', exact: true }).click();
+  const clocks = await page.evaluate(async () => {
+    const samples = [];
+    for (let frame = 0; frame < 8; frame++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const binding = window.BabelRuntimeTest.readBabelPlaybackBindings();
+      samples.push(binding.waves.map(wave => wave.getCurrentTime()));
+    }
+    return samples;
+  });
+  expect(clocks.at(-1)[0]).toBeGreaterThan(clocks[0][0]);
+  expect(clocks.at(-1)[1]).toBeGreaterThan(clocks[0][1]);
+  await page.getByRole('button', { name: 'Pause all tracks', exact: true }).click();
+  await page.evaluate(() => window.BabelRuntimeTest.readBabelTrackBindings().setFilter('speaker-2'));
+  await expect(rows(page)).toHaveCount(2);
+  expect(await page.evaluate(() => window.BabelRuntimeTest.readBabelSessionState()))
+    .toEqual({ reviewActionId: ACTION, readOnly: false });
+  const measurementPath = testInfo.outputPath('native-binding-measurement.json');
+  await writeFile(measurementPath, JSON.stringify({ ...measurement, clocks }, null, 2));
+  await testInfo.attach('native-binding-measurement', { path: measurementPath, contentType: 'application/json' });
+});
+
 test('baseline loads the recovered two-speaker transcript and real local waveforms', async ({ page, babel }) => {
   await ready(page);
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
-  await expect(text(page, 3)).toHaveValue('Продолжим проверку вместе.');
-  await expect(page.getByRole('heading', { name: 'Speaker 1', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Speaker 2', exact: true })).toBeVisible();
+  await expect.poll(() => readText(text(page, 0))).toBe(ORIGINAL);
+  await expect.poll(() => readText(text(page, 3))).toBe('Продолжим проверку вместе.');
+  await expect(page.getByRole('button', { name: 'Hide track', exact: true })).toHaveCount(2);
+  await expect(speaker(page, 0).locator('option')).toHaveText(['Speaker 1', 'Speaker 2']);
   await audioReady(page);
   await expect(waveformRegion(page, 'row-1')).toBeVisible();
   await expect.poll(() => regionTimes(page, 'row-1')).toMatchObject({ start: 0.5, end: 2.5, trackId: 'speaker-1' });
   await expect.poll(() => regionTimes(page, 'row-4')).toMatchObject({ start: 8.5, end: 10, trackId: 'speaker-2' });
   const state = await babel.state();
-  expect(state.action.annotations.map(annotation => annotation.content)).toEqual(await page.locator(TEXT).evaluateAll(elements => elements.map(element => element.value)));
+  expect(state.action.annotations.map(annotation => annotation.content)).toEqual(await readTexts(page));
   expect(calls(state, SAVE)).toHaveLength(0);
   await page.getByRole('button', { name: 'Hotkeys', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('Play/Pause');
@@ -58,35 +177,35 @@ test('baseline loads the recovered two-speaker transcript and real local wavefor
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('textarea blur commits one undoable edit, redo restores it, and save survives refetch', async ({ page, babel }) => {
+test('turn text blur commits one undoable edit, redo restores it, and save survives refetch', async ({ page, babel }) => {
   await ready(page);
   await editText(page, 0, EDITED);
-  await expect(page.getByRole('button', { name: 'Save progress', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
   expect((await babel.state()).action.annotations[0].content).toBe(ORIGINAL);
   await history(page, 'undo');
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
+  await expect.poll(() => readText(text(page, 0))).toBe(ORIGINAL);
   await history(page, 'redo');
-  await expect(text(page, 0)).toHaveValue(EDITED);
+  await expect.poll(() => readText(text(page, 0))).toBe(EDITED);
   const state = await saved(page, babel);
   expect(state.action.annotations.find(annotation => annotation.id === 'row-1').content).toBe(EDITED);
   expect(calls(state, SAVE)).toHaveLength(1);
   await page.reload();
   await ready(page);
-  await expect(text(page, 0)).toHaveValue(EDITED);
+  await expect.poll(() => readText(text(page, 0))).toBe(EDITED);
   await expect(page.getByRole('button', { name: 'Saved', exact: true })).toBeVisible();
 });
 
 test('timestamp validation refuses reversed bounds, Escape cancels, and commit updates the waveform', async ({ page, babel }) => {
   await ready(page);
   await audioReady(page);
-  const start = row(page, 0).locator('td').nth(2);
+  const start = startTime(page, 0);
   const initial = await start.innerText();
   await start.dblclick();
-  const input = start.getByPlaceholder('mm:ss.xx');
+  const input = row(page, 0).getByLabel('Start time', { exact: true });
   await input.fill('00:04.00');
   await input.press('Enter');
   await expect(input).toBeVisible();
-  await expect(start.locator('span.text-red-500')).toBeVisible();
+  await expect(input).toHaveClass(/border-red-400/);
   expect(await regionTimes(page, 'row-1')).toMatchObject({ start: 0.5, end: 2.5 });
   await input.press('Escape');
   await expect(start).toHaveText(initial);
@@ -119,31 +238,30 @@ test('create, change speaker, merge, and delete keep table and waveform in sync 
   await dialog.getByLabel('Text', { exact: true }).fill('Новая реплика.');
   await dialog.getByRole('button', { name: 'Create', exact: true }).click();
   await expect(rows(page)).toHaveCount(5);
-  await expect(text(page, 1)).toHaveValue('Новая реплика.');
+  await expect.poll(() => readText(text(page, 1))).toBe('Новая реплика.');
   const createdState = await saved(page, babel);
   const created = createdState.action.annotations.find(annotation => annotation.content === 'Новая реплика.');
   expect(created).toMatchObject({ processedRecordingId: 'speaker-1', startTimeInSeconds: 2.6, endTimeInSeconds: 2.9 });
   await expect.poll(() => regionTimes(page, created.id)).toMatchObject({ start: 2.6, end: 2.9, trackId: 'speaker-1' });
-  await row(page, 1).locator('td').nth(1).dblclick();
-  await page.getByRole('option', { name: 'Speaker 2', exact: true }).click();
-  await expect(row(page, 1).locator('td').nth(1)).toHaveText('Speaker 2');
+  await speaker(page, 1).selectOption({ label: 'Speaker 2' });
+  await expect(speaker(page, 1)).toHaveValue('speaker-2');
   await expect.poll(() => regionTimes(page, created.id)).toMatchObject({ trackId: 'speaker-2' });
   await history(page, 'undo');
   await expect.poll(() => regionTimes(page, created.id)).toMatchObject({ trackId: 'speaker-1' });
   await rowMenu(page, 1, 'Merge With Above');
   await expect(rows(page)).toHaveCount(4);
-  await expect(text(page, 0)).toHaveValue(`${ORIGINAL} Новая реплика.`);
+  await expect.poll(() => readText(text(page, 0))).toBe(`${ORIGINAL} Новая реплика.`);
   await expect.poll(() => regionTimes(page, created.id)).toMatchObject({ start: 0.5, end: 2.9 });
   await expect(waveformRegion(page, 'row-1')).toHaveCount(0);
   await history(page, 'undo');
   await expect(rows(page)).toHaveCount(5);
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
+  await expect.poll(() => readText(text(page, 0))).toBe(ORIGINAL);
   await expect.poll(() => regionTimes(page, 'row-1')).toMatchObject({ start: 0.5, end: 2.5 });
   await rowMenu(page, 1, 'Delete');
   await expect(rows(page)).toHaveCount(4);
   await expect(waveformRegion(page, created.id)).toHaveCount(0);
   await history(page, 'undo');
-  await expect(text(page, 1)).toHaveValue('Новая реплика.');
+  await expect.poll(() => readText(text(page, 1))).toBe('Новая реплика.');
   await expect.poll(() => regionTimes(page, created.id)).toMatchObject({ start: 2.6, end: 2.9 });
 });
 
@@ -156,8 +274,8 @@ test('waveform modifier-click splits a segment with a bounded gap and undo resto
   expect(box.width).toBeGreaterThan(20);
   await originalRegion.click({ position: { x: box.width / 2, y: box.height / 2 }, modifiers: ['ControlOrMeta'] });
   await expect(rows(page)).toHaveCount(5);
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
-  await expect(text(page, 1)).toHaveValue(ORIGINAL);
+  await expect.poll(() => readText(text(page, 0))).toBe(ORIGINAL);
+  await expect.poll(() => readText(text(page, 1))).toBe(ORIGINAL);
   const state = await saved(page, babel);
   const split = state.action.annotations.filter(annotation => annotation.content === ORIGINAL).sort((a, b) => a.startTimeInSeconds - b.startTimeInSeconds);
   expect(split).toHaveLength(2);
@@ -183,7 +301,7 @@ test('waveform modifier-click splits a segment with a bounded gap and undo resto
 test('real WebAudio transport plays, pauses, seeks both lanes, and applies playback rate', async ({ page }) => {
   await ready(page);
   await audioReady(page);
-  await row(page, 0).locator('td').first().click();
+  await row(page, 0).click({ position: { x: 2, y: 2 } });
   await expect.poll(async () => (await audio(page)).map(track => track.currentTime)).toEqual([0.5, 0.5]);
   await page.getByRole('button', { name: 'Play all tracks', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Pause all tracks', exact: true })).toBeVisible();
@@ -202,9 +320,9 @@ test('real WebAudio transport plays, pauses, seeks both lanes, and applies playb
     expect(track.currentTime).toBeCloseTo(paused[index].currentTime, 3);
   });
   await page.getByRole('combobox').filter({ hasText: /^1x$/ }).click();
-  await page.getByRole('option', { name: '1.5x', exact: true }).click();
-  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([1.5, 1.5]);
-  await row(page, 2).locator('td').first().click();
+  await page.getByRole('option', { name: '0.75x', exact: true }).click();
+  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([0.75, 0.75]);
+  await row(page, 2).click({ position: { x: 2, y: 2 } });
   await expect.poll(async () => (await audio(page)).map(track => track.currentTime)).toEqual([5.5, 5.5]);
   await page.getByRole('button', { name: 'Jump forward 5 seconds', exact: true }).click();
   await expect.poll(async () => (await audio(page)).map(track => track.currentTime)).toEqual([8.5, 8.5]);
@@ -251,7 +369,7 @@ test('loop drag and resize constrain genuine playback; keyboard toggle and Escap
   await page.mouse.move(endBefore.x - 25, endBefore.y + endBefore.height / 2, { steps: 8 });
   await page.mouse.up();
   await expect.poll(async () => (await end.boundingBox()).x).toBeLessThan(endBefore.x - 15);
-  await page.getByRole('columnheader', { name: 'Text', exact: true }).click();
+  await focusTranscript(page);
   await page.keyboard.press('l');
   await expect(page.getByText('(off)', { exact: true })).toBeVisible();
   await page.keyboard.press('l');
@@ -266,7 +384,7 @@ test('loop drag and resize constrain genuine playback; keyboard toggle and Escap
     return track.playing && wrapped;
   }, { timeout: 15_000, intervals: [50, 50, 100] }).toBe(true);
   await page.getByRole('button', { name: 'Pause all tracks', exact: true }).click();
-  await page.getByRole('columnheader', { name: 'Text', exact: true }).click();
+  await focusTranscript(page);
   await page.keyboard.press('Escape');
   await expect(start).toHaveCount(0);
   await expect(end).toHaveCount(0);
@@ -274,13 +392,14 @@ test('loop drag and resize constrain genuine playback; keyboard toggle and Escap
 
 test('lint errors block submit until repaired, then confirmation submits the edited payload', async ({ page, babel }) => {
   await ready(page);
+  await listenThrough(page);
   const submit = page.getByRole('button', { name: 'Submit Review', exact: true });
   await editText(page, 0, '');
-  await expect(row(page, 0).getByRole('button', { name: /linter errors?/ })).toBeVisible();
+  await expect(row(page, 0).locator('div.border-red-200')).toBeVisible();
   await expect(submit).toBeDisabled();
   expect(calls(await babel.state(), SUBMIT)).toHaveLength(0);
   await editText(page, 0, EDITED);
-  await expect(row(page, 0).getByRole('button', { name: 'No linter issues', exact: true })).toBeVisible();
+  await expect(row(page, 0).locator('div.border-red-200')).toHaveCount(0);
   await expect(submit).toBeEnabled();
   await submit.click();
   const dialog = page.getByRole('dialog', { name: 'Confirm Submission' });
@@ -299,40 +418,41 @@ test('a delayed save has a pending guard and a rejected save retains edits for a
   await ready(page);
   await babel.control({ procedures: { [SAVE]: { delayMs: 800, times: 1 } } });
   await editText(page, 0, EDITED);
-  await page.getByRole('button', { name: 'Save progress', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Saving...', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Saving…', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Saved', exact: true })).toBeVisible();
   expect(calls(await babel.state(), SAVE)).toHaveLength(1);
   await babel.control({ procedures: { [SAVE]: { error: { status: 500, message: 'Deliberate save rejection' }, times: 1 } } });
   const retryText = 'Привет, повторное сохранение.';
   await editText(page, 0, retryText);
-  await page.getByRole('button', { name: 'Save progress', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Error - Retry', exact: true })).toBeVisible();
-  await expect(text(page, 0)).toHaveValue(retryText);
+  await expect.poll(() => readText(text(page, 0))).toBe(retryText);
   expect((await babel.state()).action.annotations.find(annotation => annotation.id === 'row-1').content).toBe(EDITED);
   await page.getByRole('button', { name: 'Error - Retry', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Saved', exact: true })).toBeVisible();
   expect(calls(await babel.state(), SAVE)).toHaveLength(3);
   await page.reload();
   await ready(page);
-  await expect(text(page, 0)).toHaveValue(retryText);
+  await expect.poll(() => readText(text(page, 0))).toBe(retryText);
 });
 
-test('read-only review is a non-persisting sandbox, including after local edits and reload', async ({ page, babel }) => {
+test('read-only review disallows local edits and persistence, including after reload', async ({ page, babel }) => {
   await babel.reset('readonly', { route: `/transcription/RU-tx-gold-non-bg?reviewActionId=${ACTION}` });
   await ready(page);
   await expect(page.getByText(/No changes will persist during this read only session/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Submit Review', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^(Save progress|Saved)$/ })).toHaveCount(0);
-  // The native read-only contract permits local experimentation, never persistence.
-  await editText(page, 0, EDITED);
-  await rowMenu(page, 1, 'Delete');
-  await expect(rows(page)).toHaveCount(3);
+  await expect(page.getByRole('button', { name: /^(Save|Saved)$/ })).toHaveCount(0);
+  await expect(page.locator(TEXT)).toHaveCount(0);
+  await expect(speaker(page, 0)).toBeDisabled();
+  await expect(rows(page).locator('button[aria-haspopup="menu"]')).toHaveCount(0);
+  await expect(row(page, 0)).toContainText(ORIGINAL);
   expect(calls(await babel.state(), SAVE)).toHaveLength(0);
   expect(calls(await babel.state(), SUBMIT)).toHaveLength(0);
   await page.reload();
   await ready(page);
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
+  await expect(row(page, 0)).toContainText(ORIGINAL);
+  await expect(page.locator(TEXT)).toHaveCount(0);
 });
 
 test('diff comparison fetches the selected reference and renders changed text before returning to rows', async ({ page, babel }) => {
@@ -342,11 +462,11 @@ test('diff comparison fetches the selected reference and renders changed text be
   await expect.poll(async () => calls(await babel.state(), 'transcriptions.getTranscriptionDiff').length).toBeGreaterThan(0);
   await expect(page.getByText('Word Diff:', { exact: false })).toBeVisible();
   await expect(page.locator(TEXT)).toHaveCount(0);
-  await expect(page.locator('tbody')).toContainText('Привет');
-  await expect(page.locator('tbody')).toContainText('Удалённая тестовая фраза.');
+  await expect(transcriptScroll(page)).toContainText('Привет');
+  await expect(page.getByRole('region', { name: 'Deleted turn', exact: true })).toContainText('Удалённая тестовая фраза.');
   await page.getByLabel('Diff View', { exact: true }).uncheck();
   await ready(page);
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
+  await expect(row(page, 0)).toContainText(ORIGINAL);
 });
 
 test('native task lookup validates empty input and opens the requested action read-only', async ({ page, babel }) => {
@@ -359,7 +479,8 @@ test('native task lookup validates empty input and opens the requested action re
   await ready(page);
   await expect(dialog).toHaveCount(0);
   await expect(page.getByText(/No changes will persist during this read only session/)).toBeVisible();
-  await expect(text(page, 0)).toHaveValue(ORIGINAL);
+  await expect(row(page, 0)).toContainText(ORIGINAL);
+  await expect(page.locator(TEXT)).toHaveCount(0);
 });
 
 test('an empty queue shows the native no-work decision and returns to projects', async ({ page, babel }) => {
@@ -374,24 +495,27 @@ test('an empty queue shows the native no-work decision and returns to projects',
 
 test('warning acknowledgment gates submit and can be revoked without changing transcript text', async ({ page }) => {
   await ready(page);
+  await listenThrough(page);
   await editText(page, 0, 'Привет (это тестовая запись).');
-  const warning = row(page, 0).getByRole('button', { name: /linter warning.*0 acknowledged/ });
+  const warning = row(page, 0).getByRole('button', { name: 'My transcription is correct', exact: true });
   const submit = page.getByRole('button', { name: 'Submit Review', exact: true });
   await expect(warning).toBeVisible();
   await expect(submit).toBeDisabled();
   await warning.click();
-  const acknowledged = row(page, 0).getByRole('button', { name: /linter warning.*1 acknowledged/ });
+  const acknowledged = row(page, 0).getByRole('button', { name: 'Show 1 confirmed warning', exact: true });
   await expect(acknowledged).toBeVisible();
   await expect(submit).toBeEnabled();
   await acknowledged.click();
+  await row(page, 0).getByRole('button', { name: 'Undo', exact: true }).click();
   await expect(warning).toBeVisible();
   await expect(submit).toBeDisabled();
-  await expect(text(page, 0)).toHaveValue('Привет (это тестовая запись).');
+  await expect.poll(() => readText(text(page, 0))).toBe('Привет (это тестовая запись).');
 });
 
 test('L2 native feedback requires each rating and comment, auto-saves, and reopens its draft', async ({ page, babel }) => {
   await babel.reset('review');
   await ready(page);
+  await listenThrough(page);
   const panel = await openFeedback(page);
   await expect(panel.getByText('Complete all fields', { exact: true })).toBeVisible();
   await expect(submitReview(page)).toBeDisabled();
@@ -424,13 +548,10 @@ test('L2 native feedback restores its draft on a cold reload when the input defi
   });
 });
 
-test('L2 native feedback discards its draft on a cold reload when the draft arrives first', async ({ page, babel }) => {
-  // Captured-native defect (recovered module 73681, getOrCreateDraft onSuccess parses once with
-  // `w2.current ?? N2 ?? null`): a draft resolving before the cold input definitions is discarded.
-  // The restoration assertions stay unweakened so an unexpected pass flags a fixture or native change.
-  // Helper's `feedbackDraftRestore` compensation is proven by
-  // babel-helper-extension-repo/tests/e2e/feedback.spec.mjs (enabled restores, disabled reproduces this loss).
-  test.fail(true, 'Captured-native draft-first cold-cache race; compensated by Helper feedbackDraftRestore (babel-helper-extension-repo/tests/e2e/feedback.spec.mjs)');
+test('L2 native feedback restores its draft on a cold reload when the draft arrives first', async ({ page, babel }) => {
+  // The captured 36978 callback still parses once before definitions can arrive;
+  // 42074.X returns null without those definitions. Keep restoration as the contract,
+  // so this current native race is exposed rather than accepted as an expected failure.
   const persisted = await seedFeedbackDraft(babel);
   await coldFeedbackReload(page, babel, async ({ panel, loading, deliverDraft, deliverInputs }) => {
     await deliverDraft();
@@ -469,5 +590,5 @@ test('a long transcript remains editable after scrolling and preserves the last 
   await page.reload();
   await ready(page, 40);
   await last.scrollIntoViewIfNeeded();
-  await expect(last).toHaveValue('Последняя реплика сохранена.');
+  await expect.poll(() => readText(last)).toBe('Последняя реплика сохранена.');
 });

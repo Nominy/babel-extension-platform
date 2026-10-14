@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { createServer as createHttpServer, request as httpRequest } from 'node:http';
+import { Agent, createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -32,6 +32,7 @@ Usage: npm run e2e -- [runner options] [Playwright test filters/options]
   --browser-executable=PATH       Explicit provisioned Chromium for --nano=real only
   --speech-fixtures=DIR           Explicit local speech WAVs/annotations for real-ASR journeys
   --grep=REGEXP                   Select journeys; standard Playwright filters also accepted
+  --trace=on|retain-on-failure     Opt-in detailed Playwright traces (default off)
 
 Install dependencies: npm ci --ignore-scripts
 Install pinned browser explicitly: npm run e2e:install:browser
@@ -40,7 +41,7 @@ Also run npm ci --ignore-scripts in each of the three extension repositories.
 No implicit browser/dependency/model provisioning, version bump or publish occurs during e2e.
 Browser egress is loopback-only, including service workers and offscreen pages.
 Real provider HTTP dispatch happens only in the scenario gateway under explicit flags.
-Failure-only traces, screenshots and diagnostics are printed under the package node_modules cache.
+Failure screenshots/diagnostics are retained under the package node_modules cache; traces require opt-in.
 `;
 
 export function parseOptions(args) {
@@ -129,9 +130,13 @@ export async function preflight(options) {
 export async function validateBrowserModelDirectory(directory) {
   const source = path.join(repositoryDir, 'drafting/gold-drafting-extension/src/core/local-model-bundle.ts');
   const requireGold = createRequire(path.join(repositoryDir, 'drafting/gold-drafting-extension/package.json'));
-  const { transform } = await import(pathToFileURL(requireGold.resolve('esbuild')).href);
-  const result = await transform(`${await readFile(source, 'utf8')}\nexport { validateManifest };`, { loader: 'ts', format: 'esm', target: 'node22' });
-  const { validateManifest } = await import(`data:text/javascript;base64,${Buffer.from(result.code).toString('base64')}`);
+  const { build } = await import(pathToFileURL(requireGold.resolve('esbuild')).href);
+  const result = await build({
+    stdin: { contents: `${await readFile(source, 'utf8')}\nexport { validateManifest };`, loader: 'ts',
+      resolveDir: path.dirname(source), sourcefile: source },
+    bundle: true, write: false, platform: 'node', format: 'esm', target: 'node22',
+  });
+  const { validateManifest } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].contents).toString('base64')}`);
   const manifest = validateManifest(JSON.parse(await readFile(path.join(directory, 'manifest.json'), 'utf8')));
   const root = await realpath(directory);
   for (const file of manifest.files) {
@@ -319,7 +324,7 @@ async function productionNanoSessionOptions() {
   const requireHelper = createRequire(path.join(helperRoot, 'package.json'));
   const typescript = await import(pathToFileURL(requireHelper.resolve('typescript')).href);
   const ts = typescript.default ?? typescript;
-  const filename = path.join(helperRoot, 'src/content/magnifier-bridge.ts');
+  const filename = path.join(helperRoot, 'src/site/page-waveforms.ts');
   const source = ts.createSourceFile(filename, await readFile(filename, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const declarations = [];
   const visit = node => {
@@ -343,7 +348,7 @@ async function assertNanoAvailable(options, directory) {
   const url = `http://127.0.0.1:${origin.address().port}`;
   const fence = await startNetworkFence({ allowedOrigins: [url] });
   const profile = await mkdtemp(path.join(directory, 'nano-preflight-'));
-  let browser;
+  let browser, availabilityTimer;
   try {
     const { chromium } = await import('@playwright/test');
     browser = await chromium.launchPersistentContext(profile, {
@@ -353,10 +358,16 @@ async function assertNanoAvailable(options, directory) {
     await assertIsolatedMutedBrowser(browser, profile);
     const page = await browser.newPage();
     await page.goto(url);
-    const available = await page.evaluate(async sessionOptions => typeof globalThis.LanguageModel?.availability === 'function' ? await globalThis.LanguageModel.availability(sessionOptions) : 'unavailable', sessionOptions);
+    const available = await Promise.race([
+      page.evaluate(async sessionOptions => typeof globalThis.LanguageModel?.availability === 'function' ? await globalThis.LanguageModel.availability(sessionOptions) : 'unavailable', sessionOptions),
+      new Promise((_, reject) => {
+        availabilityTimer = setTimeout(() => reject(new Error('--nano=real capability query did not complete. An already provisioned audio/text model is required; no download or placeholder fallback was attempted.')), 15_000);
+      }),
+    ]);
     if (available !== 'available') throw new Error(`--nano=real requires the production Helper audio/text JSON-review LanguageModel capability (reported ${available}). No download or placeholder fallback is allowed.`);
     return available;
   } finally {
+    clearTimeout(availabilityTimer);
     await browser?.close();
     await fence.close();
     await new Promise(resolve => origin.close(resolve));
@@ -368,6 +379,16 @@ async function assertNanoAvailable(options, directory) {
 export async function startNetworkFence({ allowedOrigins, events = [] }) {
   const allowed = new Set(allowedOrigins.map(value => new URL(value).origin));
   const sockets = new Set();
+  const requests = new Set();
+  const agent = new Agent({ keepAlive: true });
+  const transportHeaders = headers => {
+    const forwarded = { ...headers };
+    // Each side of the proxy owns its connection, not the other side's close
+    // policy, keep-alive timeout or headers named by Connection.
+    for (const name of (headers.connection ?? '').split(',')) delete forwarded[name.trim().toLowerCase()];
+    for (const name of ['connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'proxy-authenticate', 'te', 'trailer', 'transfer-encoding', 'upgrade']) delete forwarded[name];
+    return forwarded;
+  };
   const deny = (url, method) => events.push({ type: 'network-denied', method, url, at: Date.now() });
   const server = createHttpServer((request, response) => {
     let url;
@@ -377,14 +398,27 @@ export async function startNetworkFence({ allowedOrigins, events = [] }) {
       response.writeHead(403, { 'content-type': 'text/plain' }).end('Babel E2E network fence: external requests are denied');
       return;
     }
-    const headers = { ...request.headers, host: url.host };
-    delete headers['proxy-connection']; delete headers['proxy-authorization'];
-    const upstream = httpRequest(url, { method: request.method, headers }, incoming => {
-      response.writeHead(incoming.statusCode, incoming.headers);
+    const headers = { ...transportHeaders(request.headers), host: url.host };
+    const upstream = httpRequest(url, { method: request.method, headers, agent }, incoming => {
+      incoming.on('error', error => response.destroy(error));
+      response.writeHead(incoming.statusCode, transportHeaders(incoming.headers));
       incoming.pipe(response);
     });
-    upstream.on('error', error => { if (!response.headersSent) response.writeHead(502); response.end(error.message); });
-    request.on('aborted', () => upstream.destroy());
+    requests.add(upstream);
+    upstream.once('close', () => requests.delete(upstream));
+    upstream.on('error', error => {
+      if (response.destroyed) return;
+      if (response.headersSent) response.destroy(error);
+      else response.writeHead(502).end(error.message);
+    });
+    const cancel = () => upstream.destroy();
+    request.on('aborted', cancel);
+    response.on('error', cancel);
+    response.once('close', () => {
+      // A navigation can cancel the response after the request body has been
+      // fully sent; IncomingMessage's aborted event cannot observe that case.
+      if (!response.writableFinished) cancel();
+    });
     request.pipe(upstream);
   });
   server.on('connect', (request, socket) => {
@@ -419,7 +453,13 @@ export async function startNetworkFence({ allowedOrigins, events = [] }) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   return {
     url: `http://127.0.0.1:${server.address().port}`,
-    close: async () => { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); }
+    close: async () => {
+      const closed = new Promise(resolve => server.close(resolve));
+      for (const request of requests) request.destroy();
+      agent.destroy();
+      for (const socket of sockets) socket.destroy();
+      await closed;
+    }
   };
 }
 
@@ -458,8 +498,8 @@ export async function run(args = process.argv.slice(2)) {
     const { materializeRecreationSnapshot } = await import('./recreation-snapshot.mjs');
     const app = await materializeRecreationSnapshot({ destinationDir: path.join(work, 'recreation') });
     await linkDependencies(path.join(packageDir, 'fixtures/recreation/app/node_modules'), path.join(app.directory, 'node_modules'));
-    const extensions = await buildExtensions({ directory: work, browserModels: options.browserModels, grader: options.grader });
     const nanoCapability = options.nano === 'real' ? await assertNanoAvailable(options, work) : undefined;
+    const extensions = await buildExtensions({ directory: work, browserModels: options.browserModels, grader: options.grader });
     const { startScenarioServer } = await import('./server.mjs');
     api = await startScenarioServer({
       ...options, port: 0,
@@ -496,8 +536,11 @@ export async function run(args = process.argv.slice(2)) {
     }) : undefined;
     const closed = await Promise.allSettled([closePreview, api?.close()]);
     await rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    if (code === 0) await rm(artifactDir, { recursive: true, force: true });
-    else console.error(`Failure artifacts: ${artifactDir}`);
+    if (code === 0) {
+      const retained = (await readdir(artifactDir)).some(name => name !== '.last-run.json');
+      if (retained) console.log(`Retained artifacts: ${artifactDir}`);
+      else await rm(artifactDir, { recursive: true, force: true });
+    } else console.error(`Failure artifacts: ${artifactDir}`);
     const errors = closed.filter(result => result.status === 'rejected').map(result => result.reason);
     if (errors.length) throw new AggregateError(errors, 'E2E service teardown failed.');
   }

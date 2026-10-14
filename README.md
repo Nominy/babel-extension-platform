@@ -26,6 +26,31 @@ Optional `AudioEnhancementState.progress` carries validated queue/cache-lookup/c
 Enhancement no longer depends on Review Grader or its version/identity; the obsolete access protocol and provider are removed. New native pairs start at 90% Enhanced / 10% Original. Helper confirms each user transition to 100% before publishing a selection, preserving the current audio until approval. Shared `confirmDialog` accepts an optional abort signal so navigation, superseding choices and teardown remove stale dialogs; modal keyboard events are isolated from page hotkeys.
 
 
+## Native playback and session reads
+
+`readBabelSessionState` reads the committed workbench, panel and transcript
+permissions without serializing pending Slate text or native undo state.
+Native binding readers retain only component locations: each call follows the
+current root's child/sibling links and reads current props, including same-task
+readonly changes and remounts. Missing components fail closed. Playback retains
+unchanged WaveSurfer membership, not clock samples; in-place source replacement
+and track removal are observed on the next read. Native seek/play/speed callbacks
+remain responsible for synchronized transport.
+`readBabelTurnIdentity` likewise reads only current row metadata and permissions.
+Its per-array ID index validates the requested ID at its current array position;
+replacement rows are read directly and moved/deleted/renamed IDs trigger index
+rediscovery. Timing, selection, track labels and readonly state are never cached.
+Missing IDs are not cached, so later in-place insertion is immediately visible.
+
+The native-only `shared session and playback hot-path measurement` browser test
+attaches per-read full-transcript/session/turn-identity/playback timings and live two-track
+clock samples; it checks filter identity and avoids enumerating annotation DOM
+nodes during polling. Run it without paid providers or extra models:
+
+```sh
+npm run e2e -- native.spec.mjs --project=chromium-native --grep="shared session and playback hot-path measurement"
+```
+
 ## Browser checks
 
 Install dependencies in Helper, Gold Drafting, and Review Helper before running:
@@ -44,9 +69,41 @@ npm run e2e -- appearance.spec.mjs --headed
 
 For Review Grader, also run `npm --prefix ../../reviewer/babel-review-grader-extension ci --ignore-scripts`, then `npm run e2e -- --grader`.
 
-`npm run e2e -- --help` lists options without builds, services, or a browser. Runs use temporary builds/profiles and muted Chromium, never a user Chrome profile. Native extension permission-dialog checks are headless-only. Failure artifacts are retained under `packages/babel-extension-e2e/node_modules/.cache/babel-e2e`; the failure output prints the directory.
+`npm run e2e -- --help` lists options without builds, services, or a browser. Runs use temporary builds/profiles and muted Chromium, never a user Chrome profile. Native extension permission-dialog checks are headless-only. Failure screenshots, scenario state and browser/network diagnostics are retained under `packages/babel-extension-e2e/node_modules/.cache/babel-e2e`; the output prints the directory.
+
+Detailed tracing is off by default to avoid recording full DOM/network snapshots
+for every passing test. Opt in with standard Playwright `--trace=on` to retain
+traces for passing and failing tests, or `--trace=retain-on-failure` to record
+every test but keep traces only on failure. Playwright owns trace startup,
+shutdown and attachments for the isolated persistent contexts; no second
+fixture recorder runs. Explicitly retained passing artifacts are kept in the
+same cache. Functional assertions, uncaught-error checks and independent
+5000ms teardown diagnostic deadlines apply in either mode.
+
+Parallelize with separate runner invocations, each selecting disjoint projects or
+test files, rather than increasing `--workers` inside one runner. Each invocation
+gets its own scenario backend, frontend, temporary builds and browser profiles;
+tests within an invocation share mutable scenario state. Start with two concurrent
+invocations, for example `--project=chromium-gold` alongside
+`--grader --project=chromium-native --project=chromium-review`. Keep real GPU
+inference runs separate from this concurrency to avoid resource contention.
+Each browser context also owns its proxy's upstream connection pool: canceled
+responses and context teardown release only that context's traffic. External
+origins, TLS tunnels and browser access to scenario control/reset endpoints
+remain denied; allowed backend error statuses pass through unchanged.
 
 Normal runs use pinned recreation data, not a local capture checkout. After intentionally updating the recovered source, run `npm run snapshot:refresh --workspace @nominy/babel-extension-e2e`, then `npm run e2e:install:recreation`.
+
+The active fixture is the 2026-10-13 captured editor, module `36978`, with
+annotation sections and Slate text editing. All four browser projects use it;
+`--grader` adds the Review Grader cases. Submission checks use genuine local
+audio playback to satisfy the new listening gate. No old-editor fallback exists.
+The previous rebuild and pre-migration tests are privately archived at
+`tools/babel-editor-rebuild/exports/2026-09-05-rebuild-archive.tar.gz` in the
+development checkout. Production adapters use current native turn/Slate bindings;
+the suites retain persistence, undo, readonly and stale-task assertions.
+The native-only draft-first hydration regression remains visible; Helper and
+Review independently acquire the shared hydration gate to protect their users.
 
 ## Real inference checks
 
@@ -66,7 +123,7 @@ npm run e2e -- --browser-models=real --speech-fixtures=/path/to/speech
 npm run e2e -- --nano=real --browser-executable=/path/to/chromium --speech-fixtures=/path/to/speech
 ```
 
-The browser model directory needs a `babel-browser-model-bundle-v1` `manifest.json`, matching weights/checksums, and `sample-russian-15s.wav` (mono PCM16, at most 15 seconds). Nano requires explicitly supplied speech; it does not download a model or reuse a user profile.
+The browser model directory needs the current released `babel-browser-model-bundle-v3` `manifest.json`, matching graph hashes/provenance/numeric validation, all eleven declared files, and `sample-russian-15s.wav` (mono PCM16, at most 15 seconds). Requests use the versioned model path from Gold's `model-release.json`. Nano requires explicitly supplied speech and an already available audio/text model; it does not download a model or reuse a user profile.
 
 For speech-dependent checks, `--speech-fixtures` points to a directory with two authorized mono PCM16 WAVs of matching rate/duration and this `manifest.json` structure (annotation bounds must fit the audio):
 
@@ -90,3 +147,18 @@ For speech-dependent checks, `--speech-fixtures` points to a directory with two 
 ```
 
 Default media is tones/silence, not speech. Credentials alone never enable paid calls. The runner does not capture live audio or read user Chrome data.
+
+Placeholder browser builds bind synthetic, explicitly marked model bytes only
+inside disposable artifacts; production release hashes and model verification
+are untouched. Automatic enhancement remains enabled, using the deterministic
+authenticated HTTP fixture by default rather than silently running a real GPU
+model. Its same-clock half-amplitude PCM exercises transport, cache, native
+switching, mixing and consent, not denoising quality.
+
+`native-audio-enhancement.spec.mjs` selects real Auto/WebGPU with
+`--browser-models=real --speech-fixtures=...`, requires actual GPU progress and
+rejects remote fixture fallback. Both modes compare native decoded PCM mixtures
+and Original restoration. When explicitly enabled, real-model tracing retains
+actions/screenshots/sources but omits snapshot/network-body recording to avoid
+copying the model bundle into traces. The real C-denoise lane verifies hardware execution and application of
+returned annotations; seeded integration annotations are not accuracy labels.

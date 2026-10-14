@@ -4,9 +4,11 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
 import { createProviderGateway } from './providers.mjs';
-import { createScenario, mergeScenario, makeWav, transcriptionDiff, browserModelFixture, feedbackCategories, FIXED_TIME, IDS } from './scenarios.mjs';
+import { createScenario, mergeScenario, makeWav, transcriptionDiff, browserModelFixture, BROWSER_MODEL_BASE_PATH, feedbackCategories, FIXED_TIME, IDS } from './scenarios.mjs';
 import { loadSpeechFixtures } from '../fixture-data/speech-fixtures.mjs';
+import { enhancementFixtureResponse } from './enhancement-fixture.mjs';
 
 class HttpError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
@@ -105,6 +107,7 @@ export async function startScenarioServer(options = {}) {
   const timingCache = new Map();
   const inFlight = new Set();
   const heldRequests = new Map();
+  const enhancementOwners = new Map();
   function buildScenario(name, overrides = {}) {
     const next = createScenario(name, overrides, baseURL);
     if (next.audio.fixture === 'speech') {
@@ -117,7 +120,7 @@ export async function startScenarioServer(options = {}) {
     }
     return next;
   }
-  function reset(name, overrides) { const next = buildScenario(name, overrides); generation++; state = next; audioCache.clear(); timingCache.clear(); return state; }
+  function reset(name, overrides) { const next = buildScenario(name, overrides); generation++; state = next; audioCache.clear(); timingCache.clear(); enhancementOwners.clear(); return state; }
   function event(type, data = {}) { state.events.push({ id: ++sequence, type, ...sanitize(data) }); }
   function record(req, path, body, files, procedure) {
     const call = { id: ++sequence, method: req.method, path, ...(procedure ? { procedure } : {}), body: sanitize(body), files: files ?? [], outcome: 'pending' };
@@ -161,6 +164,12 @@ export async function startScenarioServer(options = {}) {
   function procedure(name, body) {
     switch (name) {
       case 'transcriptions.getWorkerPermissionsForProject': return state.permissions;
+      case 'transcriptions.getProjectQueues':
+        if (body?.projectId !== state.project.projectId) throw new HttpError(404, 'Project not found');
+        return {
+          chunkedQueueId: state.permissions.find((permission) => permission.tag === 'chunked')?.reviewQueueId ?? '',
+          stitchedTxQueueId: state.permissions.find((permission) => permission.tag === 'stitched')?.reviewQueueId ?? '',
+        };
       case 'transcriptions.checkActiveClaimForQueue': return state.claimed ? { reviewActionId: state.action.actionId, queueId: state.queueId } : null;
       case 'transcriptions.getReviewActionDataById': return actionById(body?.reviewActionId);
       case 'transcriptions.getLatestReviewActionByProcessedTranscriptionId':
@@ -190,12 +199,24 @@ export async function startScenarioServer(options = {}) {
       case 'transcriptions.getTranscriptionDiff': return transcriptionDiff(actionById(body?.referenceReviewActionId), actionById(body?.currentReviewActionId));
       case 'annotations.getAnnotationDiffOverlay': return { referenceAnnotations: actionById(body?.referenceReviewActionId).annotations, currentAnnotations: actionById(body?.currentReviewActionId).annotations };
       case 'annotations.getAnnotationMetricsDiff': return { metrics: { referenceCount: actionById(body?.referenceReviewActionId).annotations.length, currentCount: actionById(body?.currentReviewActionId).annotations.length } };
+      case 'transcriptions.getPresignedChunkUrls': {
+        const action = actionById(body?.reviewActionId);
+        if (!Array.isArray(body?.chunkedProcessedRecordingIds)) throw new HttpError(400, 'chunkedProcessedRecordingIds must be an array');
+        const recordings = new Map(action.transcriptionChunkProcessedRecordings.map((recording) => [recording.chunkedProcessedRecordingId, recording.processedRecordingUrl]));
+        return Object.fromEntries(body.chunkedProcessedRecordingIds.map((id) => {
+          if (typeof id !== 'string' || !recordings.has(id)) throw new HttpError(404, `No audio fixture for chunked recording ${id}`, 'NOT_FOUND');
+          return [id, recordings.get(id)];
+        }));
+      }
       case 'audits.getPresignedUrls':
       case 'application.getAudioPresignedUrls': {
         if (!Array.isArray(body?.s3Urls)) throw new HttpError(400, 's3Urls must be an array');
         const allowed = new Map([state.action, state.referenceAction].flatMap((a) => a.transcriptionChunkProcessedRecordings.map((r) => [a.processedRecordingUriMap[r.chunkedProcessedRecordingId], r.processedRecordingUrl])));
         return Object.fromEntries(body.s3Urls.map((url) => { if (!allowed.has(url)) throw new HttpError(404, `No presigned audio fixture for ${url}`); return [url, allowed.get(url)]; }));
       }
+      case 'transcriptionFeedbackForm.isFeedbackApplicable':
+        if (body?.projectId !== state.project.projectId) throw new HttpError(404, 'Project not found');
+        return state.feedbackApplicable ?? actionById(body?.reviewActionId).actionLevel > 1;
       case 'transcriptionFeedbackForm.getRubricFlagNames': return state.rubricFlagNames;
       case 'transcriptionFeedbackForm.getForm': return state.form;
       case 'forms.getFormInputsByStepId': if (body?.stepId !== state.form.steps[0].id) throw new HttpError(404, 'Form step not found'); return state.formInputs;
@@ -457,14 +478,38 @@ export async function startScenarioServer(options = {}) {
       timingCache.set(body.taskId, entry);
       return entry.promise;
     }
+    if (path === '/v1/enhance' && method === 'POST') {
+      if (ai !== 'placeholder') throw new HttpError(400, 'Synthetic enhancement is restricted to the explicit placeholder inference mode');
+      const requestId = requireString(req.headers['x-babel-request-id'], 'X-Babel-Request-Id');
+      const authorization = req.headers.authorization;
+      if (typeof authorization !== 'string' || !/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) throw new HttpError(401, 'Enhancement owner authorization is required');
+      if (enhancementOwners.has(requestId)) throw new HttpError(409, 'Enhancement request already exists');
+      const expectedGeneration = generation;
+      const output = await enhancementFixtureResponse(body, parsed.audioTracks);
+      if (expectedGeneration !== generation) throw new HttpError(409, 'Stale enhancement task');
+      enhancementOwners.set(requestId, createHash('sha256').update(authorization).digest('hex'));
+      state.queue[requestId] = { requestId, status: 'completed', progress: {
+        phase: 'encoding', trackId: body.tracks[1].trackId, trackIndex: 1,
+        trackCount: 2, completedChunks: 1, totalChunks: 1,
+      } };
+      res.writeHead(200, { 'Content-Type': output.contentType, 'Content-Length': output.bytes.length,
+        'X-Babel-E2E-Inference': 'placeholder' });
+      res.end(output.bytes);
+      event('audio-enhanced-fixture', { taskId: body.taskId, requestId, model: body.model.id });
+      return { e2eFixture: true, taskId: body.taskId, tracks: output.tracks };
+    }
     const queueMatch = /^\/v1\/queue\/([^/]+)$/.exec(path);
     if (queueMatch && method === 'GET') {
       const requestId = decodeURIComponent(queueMatch[1]);
+      const enhancementOwner = enhancementOwners.get(requestId);
+      if (enhancementOwner && createHash('sha256').update(req.headers.authorization ?? '').digest('hex') !== enhancementOwner) {
+        throw new HttpError(403, 'Enhancement queue owner does not match');
+      }
       if (ai === 'local') return generated('local-queue', { requestId }, parsed, req);
       if (!state.queue[requestId]) throw new HttpError(404, 'L0 request not admitted yet'); return state.queue[requestId];
     }
     const audioMatch = /^\/(?:audio|babel-fixture)\/speaker[-_]([12])\.wav$/.exec(path);
-    if ((audioMatch || browserModels !== 'real' && path === '/browser-model/sample-russian-15s.wav') && ['GET', 'HEAD'].includes(method)) {
+    if ((audioMatch || browserModels !== 'real' && path === `${BROWSER_MODEL_BASE_PATH}/sample-russian-15s.wav`) && ['GET', 'HEAD'].includes(method)) {
       const speaker = Number(audioMatch?.[1] ?? 1);
       if (speaker > state.audio.laneCount) throw new HttpError(404, 'Audio lane absent in this scenario');
       if (!audioCache.has(speaker)) audioCache.set(speaker, state.audio.fixture === 'speech' ? speech.tracks.get(speaker) : makeWav(speaker, state.audio));
@@ -479,8 +524,8 @@ export async function startScenarioServer(options = {}) {
       res.writeHead(status, { 'Content-Type': 'audio/wav', 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1 });
       res.end(method === 'HEAD' ? undefined : bytes.subarray(start, end + 1)); return { syntheticAudio: true, speaker, bytes: end - start + 1 };
     }
-    if (path.startsWith('/browser-model/') && ['GET', 'HEAD'].includes(method)) {
-      const relative = decodeURIComponent(path.slice('/browser-model/'.length));
+    if (path.startsWith(`${BROWSER_MODEL_BASE_PATH}/`) && ['GET', 'HEAD'].includes(method)) {
+      const relative = decodeURIComponent(path.slice(BROWSER_MODEL_BASE_PATH.length + 1));
       if (!relative || relative.split(/[\\/]/).some((p) => !p || p === '.' || p === '..')) throw new HttpError(400, 'Invalid model fixture path');
       const negativeFixture = state.controls.models?.inferenceError === true && relative !== 'sample-russian-15s.wav';
       let bytes;
@@ -490,8 +535,22 @@ export async function startScenarioServer(options = {}) {
         if (!file.startsWith(modelRoot + sep)) throw new HttpError(403, 'Model path leaves configured directory');
         const info = await stat(file);
         if (!info.isFile()) throw new HttpError(404, 'Local model file not found');
+        let start = 0, end = info.size - 1, status = 200;
+        if (req.headers.range) {
+          const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range);
+          if (!range) throw new HttpError(416, 'Unsupported model byte range');
+          start = Number(range[1]);
+          end = range[2] ? Math.min(Number(range[2]), end) : end;
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end) {
+            res.setHeader('Content-Range', `bytes */${info.size}`);
+            throw new HttpError(416, 'Model byte range outside file');
+          }
+          status = 206;
+          res.setHeader('Content-Range', `bytes ${start}-${end}/${info.size}`);
+        }
         if (control.corrupt) res.setHeader('X-Babel-E2E-Negative-Fixture', 'model-byte-corruption');
-        res.writeHead(200, { 'Content-Type': relative.endsWith('.json') ? 'application/json' : 'application/octet-stream', 'Content-Length': info.size });
+        res.writeHead(status, { 'Content-Type': relative.endsWith('.json') ? 'application/json' : 'application/octet-stream',
+          'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes' });
         if (method === 'HEAD') res.end();
         else if (control.corrupt) {
           let changed = false;
@@ -501,9 +560,9 @@ export async function startScenarioServer(options = {}) {
               callback(null, chunk);
             },
           });
-          await pipeline(createReadStream(file), corruptFirstByte, res);
-        } else await pipeline(createReadStream(file), res);
-        return { modelFile: relative, bytes: info.size, transportFixture: false, corrupted: control.corrupt === true };
+          await pipeline(createReadStream(file, { start, end }), corruptFirstByte, res);
+        } else await pipeline(createReadStream(file, { start, end }), res);
+        return { modelFile: relative, bytes: end - start + 1, transportFixture: false, corrupted: control.corrupt === true };
       } else {
         const models = negativeFixture ? errorModels : fixtureModels;
         if (negativeFixture) res.setHeader('X-Babel-E2E-Negative-Fixture', 'invalid-inference-model');

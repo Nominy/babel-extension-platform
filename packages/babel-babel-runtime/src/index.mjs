@@ -147,33 +147,93 @@ export function getReactFiber(element) {
   return getReactInternalValue(element, '__reactFiber$');
 }
 
-// Captured Babel module 73681, n3 (RecoveredEditorWorkbench), derives its
-// tracks from these props. Read the committed tree, never a DOM fiber's stale
-// alternate or annotations that disappear when a lane is empty. MAIN world only.
-export function findBabelEditorFiber(documentRef = document) {
-  const roots = new Set();
-  for (const seed of documentRef.querySelectorAll('main, table')) {
-    const key = Object.getOwnPropertyNames(seed).find((name) => name.startsWith('__reactFiber$'));
-    let fiber = key ? seed[key] : null;
-    const visited = new Set();
-    while (fiber?.return && !visited.has(fiber)) {
-      visited.add(fiber);
-      fiber = fiber.return;
+// Cache locations, not Fibers or their props. Every hit follows child/sibling
+// links from the committed root; return pointers can belong to a stale alternate.
+const nativeLocations = new WeakMap();
+
+function findLocatedDescendant(root, matches, context) {
+  if (!root) return null;
+  let locations = nativeLocations.get(root) || nativeLocations.get(root.alternate);
+  if (!locations) locations = new Map();
+  nativeLocations.set(root, locations);
+  const location = locations.get(matches);
+  if (location) {
+    let fiber = root;
+    for (const index of location) {
+      fiber = fiber?.child;
+      for (let sibling = 0; fiber && sibling < index; sibling++) fiber = fiber.sibling;
+      if (!fiber) break;
     }
-    if (fiber?.stateNode?.current) roots.add(fiber.stateNode.current);
+    if (fiber && matches(fiber.memoizedProps, context)) return fiber;
   }
-  const pending = [...roots];
+  const pending = [{ fiber: root, parent: null, index: -1 }];
   const visited = new Set();
   while (pending.length && visited.size < 20000) {
-    const fiber = pending.pop();
+    const entry = pending.pop();
+    const fiber = entry.fiber;
     if (!fiber || visited.has(fiber)) continue;
     visited.add(fiber);
-    const props = fiber.memoizedProps;
-    if (typeof props?.reviewActionId === 'string' && Array.isArray(props.transcriptionChunkProcessedRecordings)) {
+    if (matches(fiber.memoizedProps, context)) {
+      const path = [];
+      for (let edge = entry; edge.parent; edge = edge.parent) path.push(edge.index);
+      locations.set(matches, path.reverse());
       return fiber;
     }
-    if (fiber.sibling) pending.push(fiber.sibling);
-    if (fiber.child) pending.push(fiber.child);
+    if (entry.parent && fiber.sibling) {
+      pending.push({ fiber: fiber.sibling, parent: entry.parent, index: entry.index + 1 });
+    }
+    if (fiber.child) pending.push({ fiber: fiber.child, parent: entry, index: 0 });
+  }
+  locations.delete(matches);
+  return null;
+}
+
+function isEditorProps(props) {
+  return typeof props?.reviewActionId === 'string' && Array.isArray(props.transcriptionChunkProcessedRecordings);
+}
+
+function isTranscriptPanelProps(props) {
+  return Array.isArray(props?.annotations) && props.saveState &&
+    typeof props.renderTranscript === 'function' && typeof props.onSave === 'function';
+}
+
+function isTranscriptProps(props) {
+  return Array.isArray(props?.turns) && typeof props.handlers?.onChangeText === 'function';
+}
+
+function isTransportProps(props) {
+  return Array.isArray(props?.annotations) && typeof props.onPlayPause === 'function' &&
+    typeof props.onSeekToAnnotation === 'function';
+}
+
+function isToolbarProps(props, reviewActionId) {
+  return props?.reviewActionId === reviewActionId && typeof props.onSpeedChange === 'function';
+}
+
+function isSpeedSelectProps(props) {
+  return typeof props?.value === 'string' && Number.isFinite(Number(props.value)) &&
+    typeof props.onValueChange === 'function';
+}
+
+// The native workbench owns recording identity and WaveSurfer refs. MAIN only.
+// Normal reads need the two stable surfaces, not every rendered annotation.
+export function findBabelEditorFiber(documentRef = document) {
+  const roots = new Set();
+  for (const selector of ['main, [data-transcript-scroll]', 'section[data-annotation-id]']) {
+    for (const seed of documentRef.querySelectorAll(selector)) {
+      const key = Object.getOwnPropertyNames(seed).find((name) => name.startsWith('__reactFiber$'));
+      let fiber = key ? seed[key] : null;
+      const visited = new Set();
+      while (fiber?.return && !visited.has(fiber)) {
+        visited.add(fiber);
+        fiber = fiber.return;
+      }
+      const root = fiber?.stateNode?.current;
+      if (!root || roots.has(root)) continue;
+      roots.add(root);
+      const editor = findLocatedDescendant(root, isEditorProps);
+      if (editor) return editor;
+    }
   }
   return null;
 }
@@ -206,41 +266,210 @@ function findDescendant(root, matches) {
   return null;
 }
 
-// Module 73681: n3 owns the WaveSurfer ref; n2 receives transport callbacks;
-// t1's Select.onValueChange updates BOTH toolbar state and native playback speed.
-// Resolve on every call so callbacks always belong to the committed task.
+function pendingNativeText(root, annotations) {
+  const committed = new Map(annotations.map(annotation => [annotation.id, annotation.content ?? '']));
+  const pendingTextById = Object.create(null);
+  const pending = [{ fiber: root, turnId: null }];
+  const visited = new Set();
+  while (pending.length && visited.size < 20000) {
+    const { fiber, turnId: inheritedId } = pending.pop();
+    if (!fiber || visited.has(fiber)) continue;
+    visited.add(fiber);
+    const props = fiber.memoizedProps;
+    const turnId = typeof props?.turn?.id === 'string' ? props.turn.id : inheritedId;
+    const slate = props?.editor;
+    if (turnId && committed.has(turnId) && Array.isArray(slate?.children) &&
+      typeof slate.apply === 'function' && typeof slate.insertData === 'function') {
+      // Native r1 serializes one paragraph, retaining the raw spelling of tags.
+      const children = slate.children[0]?.children;
+      if (Array.isArray(children)) {
+        const text = children.map(node => typeof node.text === 'string' ? node.text : node.raw).join('');
+        if (text !== committed.get(turnId)) pendingTextById[turnId] = text;
+      }
+    }
+    for (let child = fiber.child; child; child = child.sibling) pending.push({ fiber: child, turnId });
+  }
+  return pendingTextById;
+}
+
+/**
+ * Authoritative access checks do not need annotations, pending Slate text or
+ * native history. Re-read all three current props on every call, including
+ * commits that retain the same task ID or reuse the same Fiber objects.
+ * @returns {import('./index.js').BabelNativeSessionState | null}
+ */
+export function readBabelSessionState(documentRef = document) {
+  const editor = findBabelEditorFiber(documentRef);
+  const panel = findLocatedDescendant(editor, isTranscriptPanelProps)?.memoizedProps;
+  const transcript = findLocatedDescendant(editor, isTranscriptProps)?.memoizedProps;
+  if (!editor || !panel || !transcript) return null;
+  return {
+    reviewActionId: editor.memoizedProps.reviewActionId,
+    readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly)
+  };
+}
+
+// Native annotation IDs are unique. Cache their positions, not row objects or
+// values: a hit must still name the requested ID in the current array slot.
+// Reorders/removals/ID changes invalidate that position; misses are never cached.
+const nativeAnnotationPositions = new WeakMap();
+
+function findCurrentAnnotation(annotations, annotationId) {
+  const positions = nativeAnnotationPositions.get(annotations);
+  const position = positions?.get(annotationId);
+  const current = position === undefined ? null : annotations[position];
+  if (current?.id === annotationId) return current;
+  const next = new Map();
+  for (let index = 0; index < annotations.length; index++) {
+    const id = annotations[index]?.id;
+    if (typeof id === 'string' && !next.has(id)) next.set(id, index);
+  }
+  nativeAnnotationPositions.set(annotations, next);
+  const found = next.get(annotationId);
+  return found === undefined ? null : annotations[found];
+}
+
+/**
+ * Row timing/identity reads must not inspect Slate text, selection or history.
+ * Array positions are validated against current membership on every read.
+ * @returns {import('./index.js').BabelNativeTurnIdentity | null}
+ */
+export function readBabelTurnIdentity(annotationId, documentRef = document) {
+  if (typeof annotationId !== 'string' || !annotationId) return null;
+  const editor = findBabelEditorFiber(documentRef);
+  const panel = findLocatedDescendant(editor, isTranscriptPanelProps)?.memoizedProps;
+  const transcript = findLocatedDescendant(editor, isTranscriptProps)?.memoizedProps;
+  if (!editor || !panel || !transcript) return null;
+  const annotation = findCurrentAnnotation(panel.annotations, annotationId);
+  if (!annotation) return null;
+  const processedRecordingId = annotation.processedRecordingId ?? null;
+  return {
+    reviewActionId: editor.memoizedProps.reviewActionId,
+    annotationId,
+    processedRecordingId,
+    trackLabel: panel.tracks?.find(track => track.id === processedRecordingId)?.label ?? '',
+    startSeconds: annotation.startTimeInSeconds ?? null,
+    endSeconds: annotation.endTimeInSeconds ?? null,
+    isActive: transcript.activeIds?.has(annotationId) === true,
+    readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly)
+  };
+}
+
+// Current turn editor: the panel owns persistence/history callbacks while the
+// transcript owns turn editing callbacks. Resolve both from the same committed
+// workbench so filtered/readonly views never substitute stale DOM text.
+export function readBabelTranscriptBindings(documentRef = document) {
+  const editor = findBabelEditorFiber(documentRef);
+  if (!editor) return null;
+  const panelFiber = findLocatedDescendant(editor, isTranscriptPanelProps);
+  const panel = panelFiber?.memoizedProps;
+  if (!panel) return null;
+  const transcript = findLocatedDescendant(editor, isTranscriptProps)?.memoizedProps;
+  if (!transcript) return null;
+  let controller = null;
+  for (let hook = editor.memoizedState; hook; hook = hook.next) {
+    const state = hook.memoizedState;
+    const value = Array.isArray(state) ? state[0] : state;
+    if (Array.isArray(value?.annotationsRef?.current) && typeof value.selectTurn === 'function' &&
+      typeof value.updateText === 'function' && typeof value.split === 'function' &&
+      typeof value.remove === 'function' && typeof value.toggleWarningAssertion === 'function') {
+      controller = value;
+      break;
+    }
+  }
+  let history = null;
+  for (let hook = panelFiber.memoizedState; hook; hook = hook.next) {
+    const value = hook.memoizedState;
+    if (Array.isArray(value?.undoStack) && Array.isArray(value.redoStack) &&
+      typeof value.undo === 'function' && typeof value.redo === 'function' &&
+      typeof value.executeAndPush === 'function') {
+      // Zustand publishes commands synchronously, before the next React commit.
+      // Capture the actual store state, not a render's obsolete stack depth.
+      // Fail closed if this is no longer the same native external-store hook.
+      if (typeof hook.queue?.getSnapshot === 'function') {
+        try {
+          const live = hook.queue.getSnapshot();
+          if (Array.isArray(live?.undoStack) && Array.isArray(live.redoStack) &&
+              live.undo === value.undo && live.redo === value.redo &&
+              live.executeAndPush === value.executeAndPush) history = live;
+        } catch {
+          // An unmounted/inaccessible store cannot authorize native history edits.
+        }
+      }
+      break;
+    }
+  }
+  return {
+    reviewActionId: editor.memoizedProps.reviewActionId,
+    readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly),
+    annotations: panel.annotations,
+    pendingTextById: pendingNativeText(editor, panel.annotations),
+    tracks: panel.tracks,
+    panel,
+    transcript,
+    controller,
+    history
+  };
+}
+
+// The workbench retains WaveSurfer refs; native commands are resolved from the
+// current tree. Only stable registry membership is reused, never playback clocks.
+const nativeWaves = new WeakMap();
+
+function readRegistryWaves(registry) {
+  if (!registry || typeof registry !== 'object' || Array.isArray(registry)) return null;
+  const previous = nativeWaves.get(registry);
+  let count = 0;
+  let waves = previous;
+  for (const key in registry) {
+    if (!Object.prototype.hasOwnProperty.call(registry, key)) continue;
+    const wave = registry[key]?.wavesurfer;
+    if (typeof wave?.getCurrentTime !== 'function') return null;
+    if (!waves || waves[count] !== wave) {
+      if (waves === previous) waves = previous ? previous.slice(0, count) : [];
+      waves[count] = wave;
+    }
+    count++;
+  }
+  if (!count) return null;
+  if (waves.length !== count) waves = waves.slice(0, count);
+  if (waves !== previous) nativeWaves.set(registry, waves);
+  return waves;
+}
+
 export function readBabelPlaybackBindings(documentRef = document) {
   const editor = findBabelEditorFiber(documentRef);
   if (!editor) return null;
   let waves = [];
   for (let hook = editor.memoizedState; hook; hook = hook.next) {
-    const registry = hook.memoizedState?.current;
-    if (!registry || typeof registry !== 'object' || Array.isArray(registry)) continue;
-    const entries = Object.values(registry);
-    if (!entries.length || !entries.every(entry => typeof entry?.wavesurfer?.getCurrentTime === 'function')) continue;
-    waves = entries.map(entry => entry.wavesurfer);
+    const registered = readRegistryWaves(hook.memoizedState?.current);
+    if (!registered) continue;
+    waves = registered;
     break;
   }
-  const transport = findDescendant(editor, props =>
-    Array.isArray(props?.annotations) && typeof props.onPlayPause === 'function' && typeof props.onSeekToTime === 'function'
-  )?.memoizedProps;
-  const toolbar = findDescendant(editor, props =>
-    props?.reviewActionId === editor.memoizedProps.reviewActionId && typeof props.onSpeedChange === 'function'
-  );
-  const speedSelect = findDescendant(toolbar, props =>
-    typeof props?.value === 'string' && Number.isFinite(Number(props.value)) && typeof props.onValueChange === 'function'
-  )?.memoizedProps;
+  const transport = findLocatedDescendant(editor, isTransportProps)?.memoizedProps;
+  const toolbar = findLocatedDescendant(editor, isToolbarProps, editor.memoizedProps.reviewActionId);
+  const speedSelect = findLocatedDescendant(toolbar, isSpeedSelectProps)?.memoizedProps;
+  const reviewActionId = editor.memoizedProps.reviewActionId;
   return {
-    reviewActionId: editor.memoizedProps.reviewActionId,
+    reviewActionId,
     waves,
-    seekToTime: transport?.onSeekToTime ?? null,
+    seekToTime: transport ? seconds => {
+      const current = findBabelEditorFiber(documentRef);
+      if (!Number.isFinite(seconds) || current?.memoizedProps.reviewActionId !== reviewActionId) return;
+      // Resolve again if React committed since this command was obtained.
+      const currentTransport = findLocatedDescendant(current, isTransportProps)?.memoizedProps;
+      // A null recording leaves the selected turn unchanged; the native callback
+      // still seeks all tracks through its own synchronization guard.
+      currentTransport?.onSeekToAnnotation({ startTimeInSeconds: seconds, processedRecordingId: null });
+    } : null,
     togglePlayPause: transport?.onPlayPause ?? null,
     setSpeed: speedSelect?.onValueChange ?? null
   };
 }
 
-// Module 73681: n5 retains lane callbacks even when collapsed; n2's
-// track Select owns the "all" / recording-ID annotation filter.
+// Track callbacks remain available while lanes are collapsed. The transcript
+// panel's Select owns the "all" / recording-ID annotation filter.
 export function readBabelTrackBindings(documentRef = document) {
   const editor = findBabelEditorFiber(documentRef);
   if (!editor) return null;
@@ -252,14 +481,15 @@ export function readBabelTrackBindings(documentRef = document) {
     return props ? {
       id: props.track.id, label: props.track.label,
       collapsed: props.collapsed, muted: props.isSolo,
-      toggleCollapsed: props.onToggleCollapse, toggleMuted: props.onToggleSolo
+      toggleCollapsed: props.onToggleCollapse, toggleMuted: props.onToggleSolo,
+      verticalZoom: props.verticalZoom, adjustVerticalZoom: props.onAdjustVerticalZoom
     } : null;
   });
   if (tracks.some(track => !track)) return null;
-  const table = findDescendant(editor, props =>
-    Array.isArray(props?.annotations) && typeof props.onSeekToTime === 'function' && Array.isArray(props.tracks)
+  const panel = findDescendant(editor, props =>
+    Array.isArray(props?.annotations) && typeof props.onSeekToAnnotation === 'function' && Array.isArray(props.tracks)
   );
-  const filter = findDescendant(table, props =>
+  const filter = findDescendant(panel, props =>
     typeof props?.onValueChange === 'function' && Array.isArray(props.children) &&
     props.children.some(child => Array.isArray(child?.props?.children) &&
       child.props.children.some(option => option?.props?.value === 'all'))
@@ -276,16 +506,12 @@ export function parseBabelRoute(
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://dashboard.babel.audio';
   const url = input instanceof URL ? input : new URL(String(input), origin);
   const searchParams = new URLSearchParams(url.search || '');
-  const displayFeedback = searchParams.get('displayFeedback');
   const reviewActionId = searchParams.get('reviewActionId') || '';
   return {
     pathname: url.pathname,
     searchParams,
     reviewActionId,
-    isTranscriptionRoute: /^\/transcription(?:\/|$)/.test(url.pathname || ''),
-    isReadOnlyFeedbackRoute:
-      displayFeedback === 'true' ||
-      Boolean(reviewActionId && displayFeedback != null && displayFeedback !== 'false')
+    isTranscriptionRoute: /^\/transcription(?:\/|$)/.test(url.pathname || '')
   };
 }
 
@@ -339,3 +565,4 @@ export function createPageBridge(config) {
 }
 export { GRADER_PROTOCOL, GRADE_CATEGORIES, GRADE_PREFIXES, validGradeScores, gradingSnapshotKey } from './review-grading.mjs';
 export { AUDIO_ENHANCEMENT_PROTOCOL_VERSION, AUDIO_ENHANCEMENT_STATE_ATTRIBUTE, AUDIO_ENHANCEMENT_STATE_EVENT, AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_ACTIVE_RESPONSE, readAudioEnhancementState, isAudioEnhancementProgress, isAudioEnhancementStrength } from './audio-enhancement.mjs';
+export { acquireFeedbackDraftGate } from './feedback-draft.mjs';

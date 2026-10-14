@@ -15,6 +15,7 @@ import {
 type RecoveredEditorModule = {
   RecoveredPageController: React.ComponentType<Record<string, unknown>>;
   RecoveredEditorWorkbench: React.ComponentType<Record<string, unknown>>;
+  RecoveredTranscriptPanel: React.ComponentType<Record<string, unknown>>;
 };
 
 type NativeHook = { memoizedState: unknown; next: NativeHook | null };
@@ -39,6 +40,27 @@ type NativeTrack = {
   plugins?: { regions?: { getRegions: () => { id: string; start: number; end: number }[] } };
 };
 
+type DecodedAudioMetrics = {
+  decodedSampleRate: number | null;
+  decodedLength: number | null;
+  decodedRms: number | null;
+};
+const decodedRmsCache = new WeakMap<AudioBuffer, number>();
+function decodedMetrics(buffer: AudioBuffer | null): DecodedAudioMetrics {
+  if (!buffer) return { decodedSampleRate: null, decodedLength: null, decodedRms: null };
+  let rms = decodedRmsCache.get(buffer);
+  if (rms === undefined) {
+    let squared = 0;
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+      const samples = buffer.getChannelData(channel);
+      for (let index = 0; index < samples.length; index++) squared += samples[index] * samples[index];
+    }
+    rms = Math.sqrt(squared / Math.max(1, buffer.length * buffer.numberOfChannels));
+    decodedRmsCache.set(buffer, rms);
+  }
+  return { decodedSampleRate: buffer.sampleRate, decodedLength: buffer.length, decodedRms: rms };
+}
+
 function nativeSnapshot(root: HTMLElement | null, editor: RecoveredEditorModule, scenario: ScenarioState) {
   const dom = root as unknown as Record<string, unknown> | null;
   const key = dom && Object.keys(dom).find((name) => name.startsWith("__reactFiber$"));
@@ -47,30 +69,42 @@ function nativeSnapshot(root: HTMLElement | null, editor: RecoveredEditorModule,
   current = current?.stateNode?.current ?? current;
   const pending = current ? [current] : [];
   let workbench: NativeFiber | null = null;
-  let table: Record<string, unknown> | null = null;
+  let panel: Record<string, unknown> | null = null;
+  let diffMode = false;
   while (pending.length) {
     const fiber = pending.pop()!;
     if (fiber.type === editor.RecoveredEditorWorkbench) workbench = fiber;
-    if (Array.isArray(fiber.memoizedProps?.annotations) && fiber.memoizedProps?.saveState) table = fiber.memoizedProps;
+    if (fiber.type === editor.RecoveredTranscriptPanel) panel = fiber.memoizedProps;
+    if (typeof fiber.memoizedProps?.isDiffMode === "boolean" && typeof fiber.memoizedProps?.onToggleDiffMode === "function") {
+      diffMode = fiber.memoizedProps.isDiffMode;
+    }
     if (fiber.child) pending.push(fiber.child);
     if (fiber.sibling) pending.push(fiber.sibling);
   }
-  const tracks: { id: string; currentTime: number; duration: number; decoded: boolean; playing: boolean; volume: number; playbackRate: number; regions: { id: string; start: number; end: number }[] }[] = [];
+  const tracks: ({ id: string; currentTime: number; duration: number; decoded: boolean; playing: boolean; volume: number; playbackRate: number; regions: { id: string; start: number; end: number }[] } & DecodedAudioMetrics)[] = [];
+  let listening: unknown = null;
   // Find the real native track-ref by its public WaveSurfer getter contract, never a fixed hook index.
   for (let hook = workbench?.memoizedState; hook; hook = hook.next) {
     const state = hook.memoizedState;
-    if (!state || typeof state !== "object" || !("current" in state)) continue;
+    if (!state || typeof state !== "object") continue;
+    if ("getSnapshot" in state && typeof state.getSnapshot === "function"
+      && "nextGapStart" in state && typeof state.nextGapStart === "function") {
+      listening = state.getSnapshot();
+    }
+    if (!("current" in state)) continue;
     const value = state.current;
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     for (const [id, item] of Object.entries(value)) {
       const track = item as NativeTrack | null;
       if (!track?.wavesurfer || typeof track.wavesurfer.getCurrentTime !== "function") continue;
       const wave = track.wavesurfer;
+      const decoded = wave.getDecodedData();
       tracks.push({
         id,
         currentTime: wave.getCurrentTime(),
         duration: wave.getDuration(),
-        decoded: wave.getDecodedData() != null,
+        decoded: decoded != null,
+        ...decodedMetrics(decoded),
         playing: wave.isPlaying(),
         volume: wave.getVolume(),
         playbackRate: wave.getPlaybackRate(),
@@ -81,15 +115,17 @@ function nativeSnapshot(root: HTMLElement | null, editor: RecoveredEditorModule,
   return JSON.parse(JSON.stringify({
     scenario: scenario.scenario,
     route: window.location.pathname + window.location.search,
-    ready: !!workbench && !!table,
+    ready: !!workbench && !!panel,
     reviewActionId: workbench?.memoizedProps.reviewActionId ?? null,
-    readOnly: table?.readOnly ?? workbench?.memoizedProps.readOnly ?? null,
-    annotations: table?.annotations ?? [],
-    linterErrors: table?.linterErrors ?? [],
-    lintWarnings: table?.lintWarnings ?? [],
-    saveState: table?.saveState ?? null,
-    diffMode: table?.diffMode ?? false,
-    annotationDiff: table?.annotationDiff ?? null,
+    readOnly: panel?.readOnly ?? workbench?.memoizedProps.readOnly ?? null,
+    annotations: panel?.annotations ?? [],
+    linterErrors: panel?.linterErrors ?? [],
+    lintWarnings: panel?.lintWarnings ?? [],
+    saveState: panel?.saveState ?? null,
+    diffMode,
+    annotationDiff: panel?.annotationDiff ?? null,
+    submitGate: panel?.submitGate ?? null,
+    listening,
     audio: { ready: tracks.length > 0 && tracks.every((track) => track.duration > 0 && track.decoded), tracks },
   }));
 }
@@ -131,6 +167,22 @@ function ProjectsRoute({ scenario }: { scenario: ScenarioState }) {
   );
 }
 
+function ModelComparisonLegend({ scenario }: { scenario: ScenarioState }) {
+  const comparison = scenario.modelComparison as {
+    title?: string; currentModel?: string; referenceModel?: string;
+    currentLevel?: number; referenceLevel?: number;
+  } | undefined;
+  if (!comparison || typeof comparison.title !== "string"
+    || typeof comparison.currentModel !== "string" || typeof comparison.referenceModel !== "string") return null;
+  return (
+    <header aria-label="Local model comparison" className="border-b bg-slate-50 px-4 py-2 text-xs text-slate-700">
+      <strong className="text-sm">{comparison.title}</strong>
+      <span className="ml-4">L{comparison.referenceLevel}: {comparison.referenceModel} reference → L{comparison.currentLevel}: {comparison.currentModel} current</span>
+      <p className="mt-1">Enable the native Diff View below; Compare L{comparison.referenceLevel} selects {comparison.referenceModel}. Green: added · red: removed · amber: substituted. Model disagreement only, not gold accuracy or F1.</p>
+    </header>
+  );
+}
+
 function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; queryClient: QueryClient }) {
   const [native] = React.useState(() => {
     const audioTransport = createScenarioAudioTransport(scenario);
@@ -141,7 +193,7 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
       loadModule: <T,>(id: string) => runtime.require(id) as T,
     }));
     const editor = runtime.load<RecoveredEditorModule>(RECOVERED_EDITOR_MODULE_ID);
-    if (!editor.RecoveredPageController || !editor.RecoveredEditorWorkbench) throw new Error("Captured native editor exports are incomplete");
+    if (!editor.RecoveredPageController || !editor.RecoveredEditorWorkbench || !editor.RecoveredTranscriptPanel) throw new Error("Captured native editor exports are incomplete");
     return { editor, audioTransport, Toaster: runtime.load<{ Toaster: React.ComponentType }>("61704").Toaster };
   });
   const route = useRecoveredLocation();
@@ -168,6 +220,7 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
   return (
     <>
       <main ref={root} className="recovered-babel-root" data-recovered-scenario={scenario.scenario} data-recovered-module={RECOVERED_EDITOR_MODULE_ID} data-recovered-ready={route !== "/"}>
+        <ModelComparisonLegend scenario={scenario} />
         {pathname === "/projects" ? <ProjectsRoute scenario={scenario} /> : route === "/" ? <p role="status">Opening local scenario…</p> : pathname === scenario.page?.path || pathname.startsWith("/transcription/") ? (
           <PageController key={revision} project={scenario.project} {...scenario.pageProps} showTaskLookupModal={scenario.page?.showTaskLookupModal ?? scenario.showTaskLookupModal ?? scenario.pageProps?.showTaskLookupModal ?? false} />
         ) : <section role="alert"><h1>Local route not found</h1><a href="/projects" onClick={(event) => { event.preventDefault(); navigateRecovered("/projects"); }}>Projects</a></section>}

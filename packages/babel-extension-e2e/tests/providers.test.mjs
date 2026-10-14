@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { Agent, createServer, request as httpRequest } from 'node:http';
 import { once } from 'node:events';
 import test from 'node:test';
+import { text as responseText } from 'node:stream/consumers';
+import { startNetworkFence } from '../src/runner.mjs';
 import { createProviderGateway, PLACEHOLDER_MODEL, browserModelInitScript } from '../src/providers.mjs';
 
 async function upstream(t, handle) {
@@ -202,4 +204,132 @@ test('review finalization preserves reviewer comments and generates separately d
   assert.deepEqual(suggestions.map(item => item.sourceCardIds), [['card1'], ['card2']]);
   assert.notEqual(suggestions[0].proposalId, suggestions[1].proposalId);
   assert.match(suggestions[1].reason, /Разделить фразу/);
+});
+
+function throughFence(fence, url, { agent, method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(fence.url, { path: url, agent, method, headers }, resolve);
+    request.on('error', reject);
+    request.end(body);
+  });
+}
+
+test('network fence preserves HTTP status and owns keep-alive independently of upstream close', { timeout: 5000 }, async t => {
+  const local = await upstream(t, (req, res) => {
+    assert.equal(req.headers['x-client-hop'], undefined);
+    json(res, { error: 'Not deployed' }, 404, { connection: 'close, x-origin-hop', 'x-origin-hop': 'private', 'keep-alive': 'timeout=1' });
+  });
+  const events = [];
+  const fence = await startNetworkFence({ allowedOrigins: [local.url], events });
+  t.after(() => fence.close());
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  t.after(() => agent.destroy());
+  let socket;
+  for (let index = 0; index < 2; index++) {
+    const response = await throughFence(fence, `${local.url}/api/review/grade`, {
+      agent, headers: { connection: 'keep-alive, x-client-hop', 'x-client-hop': 'private' }
+    });
+    if (socket) assert.equal(response.socket, socket, 'origin close must not close the browser-facing connection');
+    else socket = response.socket;
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.headers['x-origin-hop'], undefined);
+    assert.notEqual(response.headers['keep-alive'], 'timeout=1');
+    assert.deepEqual(JSON.parse(await responseText(response)), { error: 'Not deployed' });
+  }
+  for (const url of ['http://example.invalid/denied', `${local.url}/__e2e__/control`, `${local.url}/__e2e__/reset`]) {
+    const response = await throughFence(fence, url, { agent });
+    assert.equal(response.statusCode, 403);
+    assert.match(await responseText(response), /network fence/);
+  }
+  await new Promise((resolve, reject) => {
+    const request = httpRequest(fence.url, { method: 'CONNECT', path: 'example.invalid:443', agent: false });
+    request.on('error', reject);
+    request.on('connect', (response, socket) => {
+      socket.destroy();
+      try { assert.equal(response.statusCode, 403); resolve(); } catch (error) { reject(error); }
+    });
+    request.end();
+  });
+  assert.deepEqual(local.calls.map(call => call.path), ['/api/review/grade', '/api/review/grade']);
+  assert.deepEqual(events.filter(event => event.type === 'network-denied').map(({ method, url }) => ({ method, url })), [
+    { method: 'GET', url: 'http://example.invalid/denied' },
+    { method: 'GET', url: `${local.url}/__e2e__/control` },
+    { method: 'GET', url: `${local.url}/__e2e__/reset` },
+    { method: 'CONNECT', url: 'https://example.invalid:443' }
+  ]);
+});
+
+test('network fence cancels completed uploads while waiting for or streaming a response', async t => {
+  for (const phase of ['before-headers', 'streaming']) await t.test(phase, { timeout: 5000 }, async t => {
+    let receive;
+    const received = new Promise(resolve => { receive = resolve; });
+    const local = await upstream(t, (_req, res) => {
+      if (_req.url === '/grade') return json(res, { error: 'Not deployed' }, 404);
+      if (phase === 'streaming') res.writeHead(200).write('partial response');
+      receive(res);
+    });
+    const fence = await startNetworkFence({ allowedOrigins: [local.url] });
+    t.after(() => fence.close());
+    const request = httpRequest(fence.url, { path: `${local.url}/cancel`, method: 'POST' });
+    request.on('error', error => assert.equal(error.code, 'ECONNRESET'));
+    const incoming = phase === 'streaming' ? once(request, 'response') : undefined;
+    request.end('completed upload');
+    const originResponse = await received;
+    assert.equal(request.writableFinished, true);
+    assert.equal(local.calls[0].body.toString(), 'completed upload');
+    const closed = once(originResponse, 'close', { signal: t.signal });
+    if (incoming) (await incoming)[0].destroy();
+    else request.destroy();
+    await closed;
+    assert.equal(originResponse.writableFinished, false, 'cancellation must not wait for an upstream response to finish');
+    const response = await throughFence(fence, `${local.url}/grade`);
+    assert.equal(response.statusCode, 404);
+    assert.deepEqual(JSON.parse(await responseText(response)), { error: 'Not deployed' });
+  });
+});
+
+test('network fence terminates truncated responses without poisoning the next allowed request', { timeout: 5000 }, async t => {
+  let originResponse;
+  const local = await upstream(t, (req, res) => {
+    if (req.url === '/grade') return json(res, { error: 'Not deployed' }, 404);
+    originResponse = res;
+    res.writeHead(200, { 'content-length': '100' });
+    res.write('incomplete');
+  });
+  const fence = await startNetworkFence({ allowedOrigins: [local.url] });
+  t.after(() => fence.close());
+  const response = await throughFence(fence, `${local.url}/truncated`);
+  const interrupted = assert.rejects(responseText(response), { code: 'ECONNRESET' });
+  originResponse.destroy();
+  await interrupted;
+  const next = await throughFence(fence, `${local.url}/grade`);
+  assert.equal(next.statusCode, 404);
+  assert.deepEqual(JSON.parse(await responseText(next)), { error: 'Not deployed' });
+});
+
+test('closing one network fence releases its upstream sockets without borrowing another fence transport', { timeout: 5000 }, async t => {
+  const sockets = new Map();
+  const local = await upstream(t, (req, res) => {
+    sockets.set(req.url, req.socket);
+    if (req.url === '/pending') res.writeHead(200).write('pending');
+    else json(res, { error: 'Not deployed' }, 404);
+  });
+  const first = await startNetworkFence({ allowedOrigins: [local.url] });
+  const second = await startNetworkFence({ allowedOrigins: [local.url] });
+  t.after(() => first.close());
+  t.after(() => second.close());
+  await responseText(await throughFence(first, `${local.url}/first`));
+  await responseText(await throughFence(second, `${local.url}/second`));
+  assert.notEqual(sockets.get('/first'), sockets.get('/second'), 'fences must not share the global HTTP agent');
+  const pending = await throughFence(first, `${local.url}/pending`);
+  const interrupted = assert.rejects(responseText(pending), { code: 'ECONNRESET' });
+  await responseText(await throughFence(first, `${local.url}/idle`));
+  const activeClosed = once(sockets.get('/pending'), 'close', { signal: t.signal });
+  const idleClosed = once(sockets.get('/idle'), 'close', { signal: t.signal });
+  await first.close();
+  await Promise.all([activeClosed, idleClosed, interrupted]);
+  assert.equal(sockets.get('/second').destroyed, false);
+  const response = await throughFence(second, `${local.url}/grade`);
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(JSON.parse(await responseText(response)), { error: 'Not deployed' });
 });

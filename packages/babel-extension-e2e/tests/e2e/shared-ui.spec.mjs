@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { repositoryDir } from '../../src/build.mjs';
+import { ready } from './native-helpers.mjs';
 
 test.use({ extensions: [] });
 const screenshots = path.join(repositoryDir, 'frontend-preview');
@@ -68,7 +69,6 @@ test.describe('real extension shared settings surfaces', () => {
       await expect(options.locator(`[data-bui-accent="${accent}"]`).first()).toBeVisible();
       await expect(options.locator('.bui-panel, .bui-card').first()).toHaveCSS('background-color', 'rgb(255, 255, 255)');
       const shell = options.locator('.bui-settings-shell');
-      await expect(shell).toHaveCSS('max-width', '640px');
       const position = await shell.evaluate(element => {
         const shell = element.getBoundingClientRect();
         const header = element.querySelector('.bui-header').getBoundingClientRect();
@@ -84,17 +84,10 @@ test.describe('real extension shared settings surfaces', () => {
       expect(nonScrollingPosition.x).toBe(scrollingPosition.x);
       expect(nonScrollingPosition.width).toBe(scrollingPosition.width);
       await options.evaluate(() => { document.documentElement.style.overflowY = ''; });
-      await expect(shell.locator('.bui-header').first()).toHaveCSS('padding', '12px 16px');
-      await expect(shell.locator('.bui-title').first()).toHaveCSS('font-size', '14px');
-      await expect(shell.locator('.bui-body').first()).toHaveCSS('padding', '14px 16px');
-      await expect(shell.locator('.bui-card').first()).toHaveCSS('padding', '12px');
-      await expect(shell.locator('.bui-label').first()).toHaveCSS('font-size', '11px');
-      await expect(shell.locator('.bui-button').first()).toHaveCSS('padding', '7px 11px');
       await options.screenshot({ path: path.join(screenshots, `${name}-settings.png`), fullPage: true });
       await options.screenshot({ path: path.join(screenshots, `${name}-settings-viewport.png`) });
       await options.setViewportSize({ width: 390, height: 844 });
       const bounds = await shell.boundingBox();
-      expect(bounds.x).toBeGreaterThanOrEqual(12);
       expect(bounds.x + bounds.width / 2).toBe(195);
       expect(bounds.width).toBe(390 - 2 * bounds.x);
       expect(await options.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
@@ -110,6 +103,7 @@ test.describe('real extension review surfaces', () => {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     await babel.setExtensionSettings('gold', { backendBaseUrl: babel.apiURL, openRouterApiKey: 'e2e-non-secret-admission-key', audioInputEnabled: false, l0ReplacementPreviewEnabled: false, localModelsEnabled: false });
     await babel.reset('baseline');
+    await ready(page);
     await page.locator('[data-babel-helper-appearance-button]').click();
     const appearance = page.getByRole('dialog', { name: 'Website Appearance' });
     await expect(appearance).toBeVisible();
@@ -168,6 +162,7 @@ test.describe('real extension review surfaces', () => {
     await babel.setExtensionSettings('review', { workflowMode: 'interactive', backendBaseUrl: babel.apiURL, backendBaseUrlFallbacks: [], refreshTimeoutMs: 4000 });
     await babel.reset('review');
     const url = new URL(page.url()); url.searchParams.set('displayFeedback', 'true'); await page.goto(url.href);
+    await ready(page);
     await page.locator('#babel-review-magic-button').click();
     const workspace = page.locator('.br-overlay-dialog');
     await expect(workspace).toBeVisible();

@@ -17,13 +17,16 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 15_000 },
   outputDir: process.env.BABEL_E2E_OUTPUT ?? path.join(packageDir, 'node_modules/.cache/babel-e2e/results'),
-  preserveOutput: 'failures-only',
+  // Trace mode decides retention; do not delete an explicitly requested passing trace.
+  preserveOutput: 'always',
   reporter: [['list']],
   use: {
     baseURL: run.baseURL,
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
-    trace: 'off',
+    // Playwright owns traces for persistent contexts too. Keep them opt-in, and
+    // never copy real multi-gigabyte model responses into snapshot/network data.
+    trace: { mode: 'off', screenshots: true, snapshots: run.browserModels !== 'real', sources: true },
     screenshot: 'off',
     video: 'off'
   },

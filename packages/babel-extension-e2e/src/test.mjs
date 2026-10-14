@@ -2,6 +2,7 @@ import { test as base, expect, chromium } from '@playwright/test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { assertIsolatedMutedBrowser, cancelNativeExtensionPermission, startNetworkFence } from './runner.mjs';
+import { BROWSER_MODEL_BASE_PATH } from './scenarios.mjs';
 
 const storageKeys = { helper: 'settings', gold: 'babel_gold_drafting_settings', review: 'babel.review.settings.v1' };
 const nativeDialogProfiles = new WeakMap();
@@ -143,7 +144,6 @@ export const test = base.extend({
 
   context: async ({ _run, _artifacts, _diagnostics, nativePermissionDialogs, visibleScrollbars }, use, testInfo) => {
     let profile, fence, context, stopObserving, setupFailure;
-    let tracingStarted = false;
     let startupPhase = 'profile-allocation';
     try {
       if (nativePermissionDialogs && _run.headed) throw new Error('Native permission dialog automation is restricted to isolated headless Chromium.');
@@ -173,8 +173,6 @@ export const test = base.extend({
       await assertIsolatedMutedBrowser(launchedContext, profile);
       context = launchedContext;
       if (nativePermissionDialogs) nativeDialogProfiles.set(context, profile);
-      await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-      tracingStarted = true;
       startupPhase = 'browser-observers';
       context.on('page', page => {
         page.on('pageerror', error => _diagnostics.push({ type: 'page-error', url: page.url(), message: error.stack ?? error.message }));
@@ -189,9 +187,21 @@ export const test = base.extend({
       }
       stopObserving = await observeExtensionErrors(context, _diagnostics);
       startupPhase = 'extension-registration';
+      if (_artifacts.gold) {
+        // A fresh Gold profile opens model setup from onInstalled. Let that
+        // navigation finish before another extension's options tab is opened.
+        const url = `chrome-extension://${_artifacts.gold.id}/${_artifacts.gold.options}`;
+        await expect.poll(() => context.pages().some(page => page.url() === url), {
+          message: 'Awaiting Gold first-install setup navigation', timeout: 20_000,
+        }).toBe(true);
+        await context.pages().find(page => page.url() === url).waitForLoadState('domcontentloaded');
+      }
       for (const [name, artifact] of Object.entries(_artifacts)) {
         const settings = name === 'gold' ? {
           backendBaseUrl: _run.apiURL, l0CustomBaseUrl: _run.apiURL,
+          // Keep automatic paired switching enabled, but use the marked HTTP
+          // inference boundary unless a case explicitly selects real local GPU.
+          audioEnhancementBackend: 'swarm',
           openRouterApiKey: 'e2e-placeholder-not-a-secret', model: _run.openrouterModel ?? 'e2e-placeholder-v1'
         } : name === 'review' ? { backendBaseUrl: _run.apiURL, backendBaseUrlFallbacks: [] } : {};
         if (artifact.manifest.permissions?.includes('storage')) await mergeSettings(context, name, artifact, settings);
@@ -225,19 +235,12 @@ export const test = base.extend({
           const state = await capture('scenario-state', () => jsonRequest(_run.apiURL, 'state'));
           if (state.ok) await attachArtifact(testInfo, 'scenario-state.json', JSON.stringify(state.value, null, 2), 'application/json');
         }
-        if (context) {
-          if (failed) {
-            for (const [index, page] of context.pages().entries()) {
-              // Renderer starvation can prevent Playwright's own screenshot timeout from settling.
-              const screenshot = await capture(`page-${index}-screenshot`, () => page.screenshot({ fullPage: true, timeout: 5000 }));
-              if (screenshot.ok) await attachArtifact(testInfo, `page-${index}.png`, screenshot.value, 'image/png');
-            }
-            if (tracingStarted) {
-              const trace = testInfo.outputPath('trace.zip');
-              const saved = await capture('trace-save', () => context.tracing.stop({ path: trace }));
-              if (saved.ok) await testInfo.attach('trace', { path: trace, contentType: 'application/zip' });
-            }
-          } else if (tracingStarted) await capture('trace-stop', () => context.tracing.stop());
+        if (context && failed) {
+          for (const [index, page] of context.pages().entries()) {
+            // Renderer starvation can prevent Playwright's own screenshot timeout from settling.
+            const screenshot = await capture(`page-${index}-screenshot`, () => page.screenshot({ fullPage: true, timeout: 5000 }));
+            if (screenshot.ok) await attachArtifact(testInfo, `page-${index}.png`, screenshot.value, 'image/png');
+          }
         }
       } finally {
         try {
@@ -270,6 +273,7 @@ export const test = base.extend({
       baseURL: _run.baseURL, apiURL: _run.apiURL,
       extensionIds: Object.fromEntries(Object.entries(_artifacts).map(([name, item]) => [name, item.id])),
       ai: _run.ai, browserModels: _run.browserModels, nano: _run.nano,
+      modelPath: BROWSER_MODEL_BASE_PATH,
       hasSpeechFixtures: Boolean(_run.speechFixtures),
       state: () => jsonRequest(_run.apiURL, 'state'),
       control: payload => jsonRequest(_run.apiURL, 'control', payload),

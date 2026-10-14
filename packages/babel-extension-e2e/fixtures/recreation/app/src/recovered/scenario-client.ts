@@ -21,13 +21,13 @@ export type ScenarioState = {
 };
 
 export class ScenarioApiError extends Error {
-  readonly data: { code: string; httpStatus: number; path: string };
+  readonly data: { code: string; httpStatus: number; path: string; [key: string]: unknown };
   readonly shape: { message: string; data: ScenarioApiError["data"] };
 
-  constructor(message: string, status: number, procedure: string, code = "INTERNAL_SERVER_ERROR") {
+  constructor(message: string, status: number, procedure: string, code = "INTERNAL_SERVER_ERROR", data: Record<string, unknown> = {}) {
     super(message);
     this.name = "TRPCClientError";
-    this.data = { code, httpStatus: status, path: procedure };
+    this.data = { ...data, code, httpStatus: status, path: procedure };
     this.shape = { message, data: this.data };
   }
 }
@@ -75,6 +75,7 @@ export async function requestProcedure<T = unknown>(
       error?.data?.httpStatus ?? response.status,
       procedure,
       error?.data?.code,
+      error?.data,
     );
   }
   if (!envelope?.result || !Object.prototype.hasOwnProperty.call(envelope.result, "data")) {
@@ -89,13 +90,17 @@ const procedures = [
   "annotations.getAnnotationDiffOverlay",
   "annotations.getAnnotationMetricsDiff",
   "annotations.getReviewActionsForRecordingChunk",
-  "application.getAudioPresignedUrls",
   "backgroundNoise.getNoiseEventsForRecordings",
   "forms.getFormInputsByStepId",
+  "transcriptionFeedbackForm.acknowledgeFeedback",
   "transcriptionFeedbackForm.getFeedbackReceived",
+  "transcriptionFeedbackForm.getFeedbackReceivedList",
   "transcriptionFeedbackForm.getForm",
   "transcriptionFeedbackForm.getOrCreateDraft",
   "transcriptionFeedbackForm.getRubricFlagNames",
+  "transcriptionFeedbackForm.getUnacknowledgedFeedbackCount",
+  "transcriptionFeedbackForm.getUnacknowledgedFeedbackIds",
+  "transcriptionFeedbackForm.isFeedbackApplicable",
   "transcriptionFeedbackForm.saveDraft",
   "transcriptions.adminRateTtsTranscription",
   "transcriptions.checkActiveClaimForQueue",
@@ -110,13 +115,14 @@ const procedures = [
   "transcriptions.getForeignTagDictionary",
   "transcriptions.getLatestReviewActionByProcessedTranscriptionId",
   "transcriptions.getOnboardingAttemptStatus",
+  "transcriptions.getPresignedChunkUrls",
+  "transcriptions.getProjectQueues",
   "transcriptions.getReviewActionDataById",
   "transcriptions.getReviewActionsForChunk",
   "transcriptions.getStitchedChunkReviewers",
   "transcriptions.getTranscriptionDiff",
   "transcriptions.getTtsOriginalScript",
   "transcriptions.getTtsScriptContext",
-  "transcriptions.getTtsTranscriptionWords",
   "transcriptions.getWorkerPermissionsForProject",
   "transcriptions.isDegradedTranscriptionChunk",
   "transcriptions.saveAnnotationsByReviewActionId",
@@ -231,7 +237,7 @@ export function createScenarioAudioTransport(scenario: ScenarioState): ScenarioA
 export function createTrpcFacade(queryClient: QueryClient, audio: ScenarioAudioTransport) {
   const queryProcedure = async (procedure: string, input: unknown, signal?: AbortSignal) => {
     const data = await requestProcedure(procedure, input, "GET", signal);
-    return procedure === "application.getAudioPresignedUrls" ? audio.transform(data, signal) : data;
+    return procedure === "transcriptions.getPresignedChunkUrls" ? audio.transform(data, signal) : data;
   };
   const api: Record<string, unknown> = {};
   const utils: Record<string, unknown> = {};
