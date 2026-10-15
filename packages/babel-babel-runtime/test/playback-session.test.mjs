@@ -276,3 +276,31 @@ test('turn identity follows committed remounts and fails closed when native auth
   model.setMounted(false);
   assert.equal(readBabelTurnIdentity('turn', model.document), null);
 });
+
+test('playback lifetime predicate validates live refs and small recording metadata without transcript traversal', () => {
+  const model = fixture();
+  model.editor.props.transcriptionChunkProcessedRecordings = [
+    { processedRecordingId: 'recording-a', speaker: 1 },
+    { processedRecordingId: 'recording-b', speaker: 2 }
+  ];
+  const binding = readBabelPlaybackBindings(model.document);
+  assert.deepEqual(binding.recordingTracks, [
+    { id: 'recording-a', label: 'Speaker 1' }, { id: 'recording-b', label: 'Speaker 2' }
+  ]);
+  model.resetCounters();
+  for (let index = 0; index < 100; index++) assert.equal(binding.isCurrent(), true);
+  assert.equal(model.counters.text, 0);
+  assert.ok(model.counters.props < 1200, `lifetime checks visited ${model.counters.props} props`);
+  model.editor.props.transcriptionChunkProcessedRecordings =
+    model.editor.props.transcriptionChunkProcessedRecordings.map(recording => ({ ...recording }));
+  assert.equal(binding.isCurrent(), true, 'equal recording props do not invalidate metadata');
+  model.editor.props.transcriptionChunkProcessedRecordings[1].speaker = 3;
+  assert.equal(binding.isCurrent(), false, 'in-place label changes invalidate metadata');
+  const updated = readBabelPlaybackBindings(model.document);
+  assert.equal(updated.recordingTracks[1].label, 'Speaker 3');
+  model.registry.a.wavesurfer = model.wave(4);
+  assert.equal(updated.isCurrent(), false, 'live refs, not a retained task identity, authorize notifications');
+  const replacement = readBabelPlaybackBindings(model.document);
+  model.editor.props.reviewActionId = 'task-new';
+  assert.equal(replacement.isCurrent(), false);
+});

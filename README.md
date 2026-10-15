@@ -92,6 +92,14 @@ responses and context teardown release only that context's traffic. External
 origins, TLS tunnels and browser access to scenario control/reset endpoints
 remain denied; allowed backend error statuses pass through unchanged.
 
+Helper's focused native replacement smoke is
+`npm run e2e -- --project=chromium-helper replacement-popup.spec.mjs`.
+It exercises the packaged popup document against the real local native editor:
+saved ordering, tag/whole-word replacement, hidden lanes, recovery and Undo.
+Chromium's action popup is not exposed as a Playwright Page target, so this check
+loads the same extension popup document in an inactive tab while retaining the
+Babel tab as the active native target. No third-party replacement package is used.
+
 Normal runs use pinned recreation data, not a local capture checkout. After intentionally updating the recovered source, run `npm run snapshot:refresh --workspace @nominy/babel-extension-e2e`, then `npm run e2e:install:recreation`.
 
 The active fixture is the 2026-10-13 captured editor, module `36978`, with

@@ -217,7 +217,7 @@ function isSpeedSelectProps(props) {
 
 // The native workbench owns recording identity and WaveSurfer refs. MAIN only.
 // Normal reads need the two stable surfaces, not every rendered annotation.
-export function findBabelEditorFiber(documentRef = document) {
+function findBabelEditorLocation(documentRef, rootOnly) {
   const roots = new Set();
   for (const selector of ['main, [data-transcript-scroll]', 'section[data-annotation-id]']) {
     for (const seed of documentRef.querySelectorAll(selector)) {
@@ -232,10 +232,74 @@ export function findBabelEditorFiber(documentRef = document) {
       if (!root || roots.has(root)) continue;
       roots.add(root);
       const editor = findLocatedDescendant(root, isEditorProps);
-      if (editor) return editor;
+      if (editor) return rootOnly ? fiber.stateNode : editor;
     }
   }
   return null;
+}
+
+export function findBabelEditorFiber(documentRef = document) {
+  return findBabelEditorLocation(documentRef, false);
+}
+
+const editorCommitLeaseKey = Symbol.for('@nominy/babel-babel-runtime/editor-commits/v1');
+
+/** Observe the actual committed FiberRoot, never a remembered editor/task. MAIN only. */
+export function subscribeBabelEditorCommits(listener, documentRef = document) {
+  if (typeof listener !== 'function') throw new TypeError('Editor commit listener must be a function.');
+  const root = findBabelEditorLocation(documentRef, true);
+  if (!root?.current) {
+    throw new Error('Native editor commit root is unavailable.');
+  }
+  let lease = root[editorCommitLeaseKey];
+  const descriptor = Object.getOwnPropertyDescriptor(root, 'current');
+  if (lease) {
+    if (lease.version !== 1 || descriptor?.get !== lease.get || descriptor?.set !== lease.set) {
+      throw new Error('Native editor commit hook ownership was replaced.');
+    }
+  } else {
+    if (!descriptor || !('value' in descriptor) || !descriptor.configurable || !descriptor.writable) {
+      throw new Error('Native editor commit root.current must be an own configurable writable data property.');
+    }
+    lease = {
+      version: 1, descriptor, value: descriptor.value, listeners: new Set(), queued: false,
+      get() { return lease.value; },
+      set(value) {
+        lease.value = value;
+        if (lease.queued) return;
+        lease.queued = true;
+        queueMicrotask(() => {
+          lease.queued = false;
+          if (root[editorCommitLeaseKey] !== lease) return;
+          for (const subscription of Array.from(lease.listeners)) {
+            if (!lease.listeners.has(subscription)) continue;
+            try { subscription.listener(); }
+            catch (error) { queueMicrotask(() => { throw error; }); }
+          }
+        });
+      }
+    };
+    Object.defineProperty(root, editorCommitLeaseKey, { configurable: true, value: lease });
+    try {
+      Object.defineProperty(root, 'current', {
+        configurable: true, enumerable: descriptor.enumerable, get: lease.get, set: lease.set
+      });
+    } catch (error) {
+      delete root[editorCommitLeaseKey];
+      throw error;
+    }
+  }
+  const subscription = { listener };
+  lease.listeners.add(subscription);
+  return () => {
+    if (!lease.listeners.delete(subscription) || lease.listeners.size) return;
+    const current = Object.getOwnPropertyDescriptor(root, 'current');
+    if (root[editorCommitLeaseKey] !== lease) return;
+    if (current?.get === lease.get && current?.set === lease.set) {
+      Object.defineProperty(root, 'current', { ...lease.descriptor, value: lease.value });
+    }
+    delete root[editorCommitLeaseKey];
+  };
 }
 
 export function readBabelEditorState(documentRef = document) {
@@ -417,6 +481,8 @@ export function readBabelTranscriptBindings(documentRef = document) {
 // The workbench retains WaveSurfer refs; native commands are resolved from the
 // current tree. Only stable registry membership is reused, never playback clocks.
 const nativeWaves = new WeakMap();
+const nativeRecordingTracks = new WeakMap();
+const noNativeWaves = Object.freeze([]);
 
 function readRegistryWaves(registry) {
   if (!registry || typeof registry !== 'object' || Array.isArray(registry)) return null;
@@ -439,16 +505,38 @@ function readRegistryWaves(registry) {
   return waves;
 }
 
+function readEditorWaves(editor) {
+  for (let hook = editor.memoizedState; hook; hook = hook.next) {
+    const waves = readRegistryWaves(hook.memoizedState?.current);
+    if (waves) return waves;
+  }
+  return noNativeWaves;
+}
+
+function readRecordingTracks(props) {
+  const recordings = props.transcriptionChunkProcessedRecordings;
+  const previous = nativeRecordingTracks.get(recordings);
+  let tracks = previous;
+  for (let index = 0; index < recordings.length; index++) {
+    const recording = recordings[index];
+    const id = recording.processedRecordingId;
+    const label = props.mode === 'annotation' ? `Recording ${index + 1}`
+      : recording.speaker !== null ? `Speaker ${recording.speaker}` : `Track ${index + 1}`;
+    if (tracks?.[index]?.id === id && tracks[index].label === label) continue;
+    if (tracks === previous) tracks = previous ? previous.slice(0, index) : [];
+    tracks[index] = { id, label };
+  }
+  if (!tracks) tracks = [];
+  if (tracks.length !== recordings.length) tracks = tracks.slice(0, recordings.length);
+  if (tracks !== previous) nativeRecordingTracks.set(recordings, tracks);
+  return tracks;
+}
+
 export function readBabelPlaybackBindings(documentRef = document) {
   const editor = findBabelEditorFiber(documentRef);
   if (!editor) return null;
-  let waves = [];
-  for (let hook = editor.memoizedState; hook; hook = hook.next) {
-    const registered = readRegistryWaves(hook.memoizedState?.current);
-    if (!registered) continue;
-    waves = registered;
-    break;
-  }
+  const waves = readEditorWaves(editor);
+  const recordingTracks = readRecordingTracks(editor.memoizedProps);
   const transport = findLocatedDescendant(editor, isTransportProps)?.memoizedProps;
   const toolbar = findLocatedDescendant(editor, isToolbarProps, editor.memoizedProps.reviewActionId);
   const speedSelect = findLocatedDescendant(toolbar, isSpeedSelectProps)?.memoizedProps;
@@ -456,6 +544,17 @@ export function readBabelPlaybackBindings(documentRef = document) {
   return {
     reviewActionId,
     waves,
+    recordingTracks,
+    isCurrent() {
+      const current = findBabelEditorFiber(documentRef);
+      if (current?.memoizedProps.reviewActionId !== reviewActionId || readEditorWaves(current) !== waves) return false;
+      const tracks = readRecordingTracks(current.memoizedProps);
+      if (tracks.length !== recordingTracks.length) return false;
+      for (let index = 0; index < tracks.length; index++) {
+        if (tracks[index].id !== recordingTracks[index].id || tracks[index].label !== recordingTracks[index].label) return false;
+      }
+      return true;
+    },
     seekToTime: transport ? seconds => {
       const current = findBabelEditorFiber(documentRef);
       if (!Number.isFinite(seconds) || current?.memoizedProps.reviewActionId !== reviewActionId) return;

@@ -14,6 +14,12 @@ export declare function registerDomLifecycle(
 export declare function getReactInternalValue(element: unknown, prefix: string): unknown;
 export declare function getReactFiber(element: unknown): unknown;
 export declare function findBabelEditorFiber(documentRef?: Document): unknown;
+export type BabelEditorCommitListener = () => void;
+export type BabelEditorCommitUnsubscribe = () => void;
+/** MAIN only. Throws if the current native root cannot be safely observed. */
+export declare function subscribeBabelEditorCommits(
+  listener: BabelEditorCommitListener, documentRef?: Document
+): BabelEditorCommitUnsubscribe;
 export interface BabelNativeAnnotation {
   id: string;
   type: string;
@@ -88,11 +94,17 @@ export interface BabelNativeTranscriptBindings {
 export declare function readBabelTranscriptBindings(documentRef?: Document): BabelNativeTranscriptBindings | null;
 export interface BabelNativePlaybackBindings {
   reviewActionId: string;
+  recordingTracks: ReadonlyArray<{ id: string; label: string }>;
+  /** Live current-root, task, waveform membership and recording-metadata validation. */
+  isCurrent(): boolean;
   waves: Array<{
     getCurrentTime(): number;
     getDuration(): number;
     getPlaybackRate(): number;
     isPlaying(): boolean;
+    on(event: string, listener: (...args: unknown[]) => void): () => void;
+    un(event: string, listener: (...args: unknown[]) => void): void;
+    getMediaElement(): Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
   }>;
   seekToTime: ((seconds: number) => void) | null;
   togglePlayPause: (() => void) | null;
