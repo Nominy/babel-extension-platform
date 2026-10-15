@@ -8,7 +8,8 @@ function nativeHistoryFixture() {
   const committed = { undoStack: [first], redoStack: [], undo() {}, redo() {}, executeAndPush() {} };
   let live = committed;
   const historyHook = { memoizedState: committed, queue: { getSnapshot: () => live } };
-  const transcript = { memoizedProps: { turns: annotations, handlers: { onChangeText() {} } } };
+  const transcript = { memoizedProps: { turns: annotations, editingId: null, localEdits: false,
+    handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} } } };
   const panel = { memoizedProps: { annotations, tracks: [], saveState: {}, renderTranscript() {}, onSave() {} },
     memoizedState: historyHook, child: transcript };
   const workbench = { memoizedProps: { reviewActionId: 'native-task', transcriptionChunkProcessedRecordings: [] }, child: panel };
@@ -19,7 +20,7 @@ function nativeHistoryFixture() {
   transcript.return = panel;
   const seed = { __reactFiber$native: workbench };
   const document = { querySelectorAll: () => [seed] };
-  return { annotations, committed, historyHook, workbench, root, document, setLive(value) { live = value; } };
+  return { annotations, committed, historyHook, transcript, panel, workbench, root, document, setLive(value) { live = value; } };
 }
 
 test('history reads the synchronous native store while transcript annotations retain committed identity', () => {
@@ -57,7 +58,8 @@ test('history fails closed for missing, throwing, malformed or different native 
 test('current native controller needs operations, not a private annotations ref', () => {
   const fixture = nativeHistoryFixture();
   const controller = {
-    selectTurn() {}, updateTime() {}, updateText() {}, split() {}, remove() {}, toggleWarningAssertion() {},
+    editTurn() {}, leaveTurn() {}, selectTurn() {}, seekTurn() {},
+    updateTime() {}, updateText() {}, split() {}, remove() {}, toggleWarningAssertion() {},
   };
   const rpc = new Proxy({}, { get: () => () => { throw new Error('Not a native controller'); } });
   fixture.workbench.memoizedState = { memoizedState: [rpc, []],
@@ -70,4 +72,62 @@ test('current native controller needs operations, not a private annotations ref'
     'a committed replacement must not reuse the previous controller');
   current.memoizedState.memoizedState = [{ ...replacement, split: null }, []];
   assert.equal(readBabelTranscriptBindings(fixture.document).controller, null);
+});
+
+test('Oct15 editing ownership and local Slate history stay native while global history advances', () => {
+  const fixture = nativeHistoryFixture();
+  const transcript = fixture.transcript.memoizedProps;
+  const local = { undos: [{ operations: ['insert_text'] }], redos: [] };
+  const cache = { restore() {}, save() {} };
+  const slate = {
+    children: [{ children: [{ text: 'Pending ' }, { type: 'tag', raw: '[laugh]', children: [{ text: '' }] }] }],
+    history: local, apply() {}, insertData() {}
+  };
+  fixture.transcript.memoizedState = { memoizedState: cache };
+  fixture.transcript.child = { memoizedProps: {
+    turn: fixture.annotations[0], isActive: false, isEditing: true, history: cache
+  }, child: { memoizedProps: { editor: slate } } };
+  transcript.editingId = 'turn';
+  transcript.localEdits = true;
+  transcript.readOnly = true;
+  const live = { ...fixture.committed, undoStack: [] };
+  fixture.setLive(live);
+  const binding = readBabelTranscriptBindings(fixture.document);
+  assert.equal(binding.transcript, transcript);
+  assert.equal(binding.transcript.editingId, 'turn');
+  assert.equal(binding.readOnly, true, 'native local-only edits cannot authorize helper persistence');
+  assert.equal(binding.history, live, 'global Undo must not resolve the row-local Slate cache');
+  assert.equal(binding.pendingTextById.turn, 'Pending [laugh]');
+  assert.equal(slate.history, local, 'reading pending text must never reset native local Undo');
+  assert.equal(fixture.transcript.memoizedState.memoizedState, cache);
+});
+
+test('old activation-only transcripts cannot authorize current editing operations', () => {
+  const fixture = nativeHistoryFixture();
+  const transcript = fixture.transcript.memoizedProps;
+  delete transcript.editingId;
+  assert.equal(readBabelTranscriptBindings(fixture.document), null);
+  transcript.editingId = null;
+  const deactivate = transcript.handlers.onDeactivate;
+  delete transcript.handlers.onDeactivate;
+  assert.equal(readBabelTranscriptBindings(fixture.document), null);
+  transcript.handlers.onDeactivate = deactivate;
+  assert.equal(readBabelTranscriptBindings(fixture.document).transcript, transcript);
+});
+
+test('current transcript callbacks replace retired render closures without rewriting native props', () => {
+  const fixture = nativeHistoryFixture();
+  const calls = [];
+  const previous = fixture.transcript.memoizedProps;
+  previous.handlers.onChangeText = () => assert.fail('retired text writer');
+  readBabelTranscriptBindings(fixture.document);
+  const next = { ...previous, editingId: 'turn', handlers: {
+    ...previous.handlers, onChangeText(id, text) { calls.push([id, text]); }
+  } };
+  fixture.transcript.memoizedProps = next;
+  const binding = readBabelTranscriptBindings(fixture.document);
+  binding.transcript.handlers.onChangeText('turn', 'Current text');
+  assert.deepEqual(calls, [['turn', 'Current text']]);
+  assert.equal(binding.transcript, next);
+  assert.equal(fixture.transcript.memoizedProps.handlers, next.handlers);
 });

@@ -78,6 +78,32 @@ export function createScenario(name = 'baseline', overrides = {}, baseURL = '') 
   if (readOnly) action.actionDecision = 'pass';
   const state = {
     scenario: name, project: { projectId: IDS.project, category: 'transcription', productKind: 'transcription', projectName: 'RU-tx-gold-non-bg', name: 'RU-tx-gold-non-bg' },
+    projectStyleGuide: {
+      id: '55555555-5555-4555-8555-555555555555', version: 1, createdAt: FIXED_TIME,
+      content: [
+        '# Synthetic transcription style guide',
+        '',
+        'This guide applies only to the local two-speaker recording.',
+        '',
+        '## Turn boundaries',
+        '',
+        'Keep each speaker on their own lane. Start a turn at the first audible word and end it after the last audible word; leave silence outside the turn.',
+        '',
+        '![A speaker turn bounded by silence](asset://turn-boundaries)',
+        '',
+        '## Text and sound tags',
+        '',
+        '| What you hear | Transcription |',
+        '| --- | --- |',
+        '| Spoken greeting | Привет, это тестовая запись. |',
+        '| Audible laughter | [смех] |',
+        '',
+        '- [ ] Preserve the spoken words and punctuation.',
+        '- [ ] Separate a sound tag from neighboring words with spaces.',
+        '- [ ] Listen to both lanes before submitting.',
+      ].join('\n'),
+      mediaUrls: { 'turn-boundaries': `${baseURL}/style-guide/turn-boundaries.svg` },
+    },
     worker: { id: IDS.worker, name: 'Synthetic E2E Worker' },
     permissions: [{ reviewQueueId: IDS.queue, level: 2, tag: 'chunked' }, { reviewQueueId: `${IDS.queue.slice(0, -1)}8`, level: 2, tag: 'stitched' }],
     projectId: IDS.project, queueId: IDS.queue, action, referenceAction, readOnly, showTaskLookupModal: false, noWork: name === 'empty',
@@ -118,8 +144,7 @@ export function makeWav(speaker, audio) {
   return bytes;
 }
 
-function wordDiff(before, after) {
-  const a = before.trim().split(/\s+/).filter(Boolean), b = after.trim().split(/\s+/).filter(Boolean);
+function tokenDiff(a, b) {
   const lengths = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
   for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) lengths[i][j] = a[i] === b[j] ? 1 + lengths[i + 1][j + 1] : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
   const out = []; let i = 0, j = 0;
@@ -129,6 +154,34 @@ function wordDiff(before, after) {
     else out.push({ value: b[j++], status: 'added' });
   }
   return out;
+}
+function wordDiff(before, after) {
+  return tokenDiff(before.trim().split(/\s+/).filter(Boolean), after.trim().split(/\s+/).filter(Boolean));
+}
+function tagAndPunctuationTokens(text) {
+  const tags = [];
+  const plain = text.replace(/<[^>]*>|\[[^\]]*\]|\{[^}]*\}|\*+/gu, tag => {
+    tags.push(tag);
+    return '';
+  });
+  return {
+    tags,
+    punctuation: [...plain].filter(character =>
+      /\p{P}/u.test(character) && !/[\p{Pd}\p{Ps}\p{Pe}]/u.test(character))
+  };
+}
+function accumulateTokenMetrics(metrics, before, after) {
+  const changes = tokenDiff(before, after);
+  const removed = changes.filter(token => token.status === 'removed').length;
+  const added = changes.filter(token => token.status === 'added').length;
+  const substitutions = Math.min(removed, added);
+  metrics.referenceCount += before.length;
+  metrics.substitutions += substitutions;
+  metrics.insertions += added - substitutions;
+  metrics.deletions += removed - substitutions;
+  metrics.rate = metrics.referenceCount
+    ? (metrics.substitutions + metrics.insertions + metrics.deletions) / metrics.referenceCount
+    : null;
 }
 function segment(row) { return { annotationId: row.id, text: row.content, content: row.content, startTime: row.startTimeInSeconds, endTime: row.endTimeInSeconds, startTimeInSeconds: row.startTimeInSeconds, endTimeInSeconds: row.endTimeInSeconds, wordRange: [0, row.content.trim().split(/\s+/).length] }; }
 export function transcriptionDiff(reference, current) {
@@ -160,10 +213,20 @@ export function transcriptionDiff(reference, current) {
   const mappings = speakerDiffs.flatMap((speaker) => speaker.segmentMappings);
   const totalWords = reference.annotations.reduce((count, row) => count + row.content.trim().split(/\s+/).length, 0);
   const substitutions = mappings.reduce((n, m) => n + m.substitutions, 0), insertions = mappings.reduce((n, m) => n + m.insertions, 0), deletions = mappings.reduce((n, m) => n + m.deletions, 0);
+  const tags = { substitutions: 0, insertions: 0, deletions: 0, referenceCount: 0, rate: null };
+  const punctuation = { substitutions: 0, insertions: 0, deletions: 0, referenceCount: 0, rate: null };
+  for (const mapping of mappings) {
+    const before = tagAndPunctuationTokens(mapping.referenceText);
+    const after = tagAndPunctuationTokens(mapping.hypothesisText);
+    accumulateTokenMetrics(tags, before.tags, after.tags);
+    accumulateTokenMetrics(punctuation, before.punctuation, after.punctuation);
+  }
   return { referenceReviewActionId: reference.actionId, currentReviewActionId: current.actionId, referenceLevel: reference.actionLevel, currentLevel: current.actionLevel,
     speakerDiffs, referenceAnnotations: reference.annotations, currentAnnotations: current.annotations,
     overallWordErrorRate: (substitutions + insertions + deletions) / Math.max(1, totalWords),
     totalSubstitutions: substitutions, totalInsertions: insertions, totalDeletions: deletions, totalWords,
+    totalTagSubstitutions: tags.substitutions, totalTagInsertions: tags.insertions,
+    totalTagDeletions: tags.deletions, totalTags: tags.referenceCount, tagErrorRate: tags.rate, punctuation,
     timestampMetrics: { segments: { details: timestampDetails,
       avgShiftMs: timestampDetails.length ? timestampDetails.reduce((sum, detail) => sum + detail.avgShiftMs, 0) / timestampDetails.length : null } } };
 }

@@ -4,6 +4,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import { create as createZustandStore } from "zustand";
 import type { QueryClient } from "@tanstack/react-query";
 import { createNavigationAdapter, createTrpcFacade, type ScenarioAudioTransport, type ScenarioState } from "./scenario-client";
+import adapterMapping from "./generated/adapterMapping.json";
 
 type AdapterContext = {
   queryClient: QueryClient;
@@ -42,22 +43,20 @@ export function createRecoveredAdapters({ queryClient, scenario, audioTransport,
     setShareCode: (shareCode) => set({ shareCode }),
   }));
   const navigation = createNavigationAdapter(scenario, queryClient);
-  return {
-    "92827": jsxRuntime,
-    "10241": jsxRuntime,
-    "24289": React,
-    "70551": React,
-    "91284": ReactDOM,
-    "9580": ReactDOM,
-    "3622": { y: workerStore },
-    "79181": { default: NextImageAdapter },
-    "16372": navigation,
-    "23042": navigation,
-    "39540": createTrpcFacade(queryClient, audioTransport),
+  const roles = {
+    jsxRuntime,
+    react: React,
+    reactDom: ReactDOM,
+    worker: { y: workerStore },
+    nextImage: { default: NextImageAdapter },
+    navigation,
+    trpc: createTrpcFacade(queryClient, audioTransport),
     // Keep the native analytics context/hook, without importing live SDK providers.
-    "57460": {
-      get z$() { return loadModule<{ z: unknown }>("1088").z; },
-      get ng() { return loadModule<{ n: unknown }>("1088").n; },
+    analytics: {
+      get z$() { return loadModule<{ z: unknown }>(adapterMapping.nativeModules.analyticsContext).z; },
+      get ng() { return loadModule<{ n: unknown }>(adapterMapping.nativeModules.analyticsContext).n; },
     },
   };
+  return Object.fromEntries(Object.entries(adapterMapping.roles).flatMap(([name, role]) =>
+    role.ids.map(id => [id, roles[name as keyof typeof roles]])));
 }

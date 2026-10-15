@@ -1,4 +1,4 @@
-import { recoveredEditorModuleId, recoveredModuleSources } from "./generated/moduleSources";
+import { recoveredEditorModuleId, recoveredLazyChunks, recoveredModuleSources } from "./generated/moduleSources";
 
 export const RECOVERED_EDITOR_MODULE_ID = recoveredEditorModuleId;
 export type RecoveredExports = Record<string, unknown>;
@@ -18,7 +18,7 @@ type RecoveredRequire = ((request: string | number) => unknown) & {
   t: (request: unknown, mode: number) => unknown;
   g: typeof globalThis;
   nc: string | undefined;
-  e: (chunkId: string | number) => Promise<never>;
+  e: (chunkId: string | number) => Promise<void>;
 };
 
 type WebpackFactory = (module: RuntimeModule, exports: unknown, require: RecoveredRequire) => void;
@@ -61,7 +61,12 @@ export class RecoveredRuntime {
     try {
       // The source is a complete webpack factory, not a decompiled CommonJS body.
       const factory = new Function(`return (${source});\n//# sourceURL=recovered-babel://${id}.js`)() as WebpackFactory;
-      factory.call(module.exports, module, module.exports, this.localRequire);
+      // Preserve webpack's public registration boundary before execution so
+      // document_start integrations see the unchanged captured factory.
+      const registration: [number[], Record<string, WebpackFactory>] = [[], { [id]: factory }];
+      const host = globalThis as typeof globalThis & { webpackChunk_N_E?: unknown[] };
+      (host.webpackChunk_N_E ||= []).push(registration);
+      registration[1][id].call(module.exports, module, module.exports, this.localRequire);
       module.loaded = true;
       return module.exports;
     } catch (cause) {
@@ -122,7 +127,12 @@ export class RecoveredRuntime {
     localRequire.g = globalThis;
     localRequire.nc = undefined;
     localRequire.e = async chunkId => {
-      throw new Error(`Uncaptured dynamic webpack chunk ${chunkId}; the current offline editor graph has no lazy chunks. Capture the requested static dependency before enabling this route.`);
+      const id = normalizeRequest(chunkId);
+      const modules = Object.prototype.hasOwnProperty.call(recoveredLazyChunks, id) ? recoveredLazyChunks[id] : undefined;
+      if (!modules || modules.some(moduleId => !Object.prototype.hasOwnProperty.call(recoveredModuleSources, moduleId))) {
+        throw new Error(`Uncaptured dynamic webpack chunk ${id}; capture its complete current registration before enabling this route.`);
+      }
+      // Its verified factories are already embedded; execution remains lazy via require.bind.
     };
     return new Proxy(localRequire, {
       get(target, property, receiver) {

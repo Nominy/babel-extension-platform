@@ -27,6 +27,15 @@ function sanitize(value) {
 function requireObject(body) { if (!object(body)) throw new HttpError(400, 'Expected a JSON object'); }
 function requireString(value, label) { if (typeof value !== 'string' || !value.trim()) throw new HttpError(400, `${label} must be a non-empty string`); return value; }
 function json(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); }
+function serializeProcedureData(name, data) {
+  if (name !== 'project.getProjectStyleGuide' || data === null) return { json: data };
+  // Scenario JSON stores ISO strings; this endpoint's native tRPC schema returns a Date.
+  // Mark that type explicitly with the captured SuperJSON wire format, never infer dates on the client.
+  if (typeof data?.createdAt !== 'string' || !Number.isFinite(Date.parse(data.createdAt))) {
+    throw new HttpError(500, 'Style guide fixture requires a valid ISO createdAt');
+  }
+  return { json: { ...data, createdAt: new Date(data.createdAt).toISOString() }, meta: { values: { createdAt: ['Date'] }, v: 1 } };
+}
 async function parseRequest(req, url) {
   if (req.method === 'GET' || req.method === 'HEAD') return { body: undefined, audioTracks: [], files: [] };
   const chunks = []; let length = 0;
@@ -230,6 +239,11 @@ export async function startScenarioServer(options = {}) {
       case 'transcriptionFeedbackForm.getFeedbackReceived': actionById(body?.reviewActionId); return state.feedbackReceived;
       case 'worker.getProjects': case 'worker.getProjectsWithAvailability': return [{ ...state.project, availableTasks: state.noWork || state.submitted ? 0 : 1 }];
       case 'worker.getProjectById': return state.project;
+      case 'project.getProjectStyleGuide':
+        requireObject(body);
+        requireString(body.projectId, 'projectId');
+        if (body.projectId !== state.project.projectId) throw new HttpError(404, 'Project not found', 'NOT_FOUND');
+        return state.projectStyleGuide;
       case 'transcriptions.getChunkConsensus': return state.consensus ?? null;
       case 'transcriptions.isDegradedTranscriptionChunk': return state.degraded ?? false;
       case 'transcriptions.getAssessmentInfo': return state.assessment ?? null;
@@ -268,8 +282,9 @@ export async function startScenarioServer(options = {}) {
       try {
         const control = takeControl('procedures', name); await applyControl(control, expectedGeneration);
         const data = own(control, 'response') ? control.response : procedure(name, body);
+        const serialized = serializeProcedureData(name, data);
         call.outcome = 'success'; call.response = sanitize(data);
-        return { status: 200, value: { result: { data: { json: data } } } };
+        return { status: 200, value: { result: { data: serialized } } };
       } catch (error) {
         const status = error.status ?? 500, code = error.code ?? ({ 400: 'BAD_REQUEST', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'CONFLICT' }[status] ?? 'INTERNAL_SERVER_ERROR');
         call.outcome = 'error'; call.error = { status, message: sanitize(error.message) };
@@ -507,6 +522,12 @@ export async function startScenarioServer(options = {}) {
       }
       if (ai === 'local') return generated('local-queue', { requestId }, parsed, req);
       if (!state.queue[requestId]) throw new HttpError(404, 'L0 request not admitted yet'); return state.queue[requestId];
+    }
+    if (path === '/style-guide/turn-boundaries.svg' && ['GET', 'HEAD'].includes(method)) {
+      const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 120" role="img" aria-labelledby="title"><title id="title">A speaker turn bounded by silence</title><rect width="480" height="120" fill="#f8fafc"/><path d="M20 60H100M380 60H460" stroke="#64748b" stroke-width="2"/><rect x="100" y="20" width="280" height="80" rx="6" fill="#dbeafe"/><path d="M110 60h20l10-20 10 40 10-50 10 60 10-40 10 20 10-10h20l10-30 10 60 10-40 10 20 10-10h20l10-20 10 40 10-30 10 20 10-10h20" fill="none" stroke="#2563eb" stroke-width="3"/><text x="25" y="105" font-size="12">Silence</text><text x="175" y="115" font-size="12">Speaker turn</text><text x="400" y="105" font-size="12">Silence</text></svg>');
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': bytes.length });
+      res.end(method === 'HEAD' ? undefined : bytes);
+      return { syntheticStyleGuideMedia: true, bytes: bytes.length };
     }
     const audioMatch = /^\/(?:audio|babel-fixture)\/speaker[-_]([12])\.wav$/.exec(path);
     if ((audioMatch || browserModels !== 'real' && path === `${BROWSER_MODEL_BASE_PATH}/sample-russian-15s.wav`) && ['GET', 'HEAD'].includes(method)) {

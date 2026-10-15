@@ -3,7 +3,7 @@ import { request } from 'node:http';
 import test from 'node:test';
 import { startScenarioServer } from '../src/server.mjs';
 import { createHash } from 'node:crypto';
-import { makeWav } from '../src/scenarios.mjs';
+import { makeWav, transcriptionDiff } from '../src/scenarios.mjs';
 
 function rawRequest(baseURL, target, body, origin) {
   const url = new URL(baseURL);
@@ -32,6 +32,31 @@ function rawRequest(baseURL, target, body, origin) {
     req.end(bytes ?? undefined);
   });
 }
+
+test('current diff metrics count actual tag and punctuation edits without counting tag interiors', () => {
+  const action = (id, content) => ({
+    actionId: id, actionLevel: 1,
+    annotations: [{ id: 'row', processedRecordingId: 'speaker-1', content, startTimeInSeconds: 0, endTimeInSeconds: 2 }]
+  });
+  const reference = action('reference', 'Привет, [смех?!] мир.');
+  const current = action('current', 'Привет! [шум.] мир?');
+  const original = structuredClone({ reference, current });
+  const result = transcriptionDiff(reference, current);
+  assert.equal(result.totalTagSubstitutions, 1);
+  assert.equal(result.totalTagInsertions, 0);
+  assert.equal(result.totalTagDeletions, 0);
+  assert.equal(result.tagErrorRate, 1);
+  assert.deepEqual(result.punctuation, {
+    substitutions: 2, insertions: 0, deletions: 0, referenceCount: 2, rate: 1
+  });
+  const added = transcriptionDiff(action('reference', 'слово'), action('current', 'слово! [смех]'));
+  assert.equal(added.totalTagInsertions, 1);
+  assert.equal(added.tagErrorRate, null);
+  assert.deepEqual(added.punctuation, {
+    substitutions: 0, insertions: 1, deletions: 0, referenceCount: 0, rate: null
+  });
+  assert.deepEqual({ reference, current }, original);
+});
 
 test('normal Node control works while authority and backslash targets cannot mutate scenario state', async (t) => {
   const server = await startScenarioServer();
@@ -92,6 +117,43 @@ test('chunk audio lookup returns playable scenario audio and rejects recordings 
   assert.equal((await query(state.action.actionId, ['missing-recording'])).status, 404);
   assert.equal((await query('missing-action', [recording.chunkedProcessedRecordingId])).status, 404);
   assert.equal((await query(state.action.actionId, 'not-an-array')).status, 400);
+});
+
+test('project style guide returns renderable local content, typed dates and owned media without changing task data', async (t) => {
+  const server = await startScenarioServer();
+  t.after(() => server.close());
+  const state = JSON.parse((await rawRequest(server.url, '/__e2e__/reset', { scenario: 'baseline' })).body);
+  const query = projectId => rawRequest(server.url, '/api/trpc/project.getProjectStyleGuide?input='
+    + encodeURIComponent(JSON.stringify({ json: { projectId } })));
+  const response = await query(state.project.projectId);
+  assert.equal(response.status, 200);
+  const { json: guide, meta } = JSON.parse(response.body).result.data;
+  assert.match(guide.content, /## Turn boundaries/);
+  assert.match(guide.content, /\| Spoken greeting \|/);
+  assert.match(guide.content, /!\[.+\]\(asset:\/\/turn-boundaries\)/);
+  assert.deepEqual(meta.values.createdAt, ['Date']);
+  assert.equal(new Date(guide.createdAt).toISOString(), state.projectStyleGuide.createdAt);
+  const mediaUrl = new URL(guide.mediaUrls['turn-boundaries']);
+  assert.equal(mediaUrl.origin, server.url);
+  const media = await fetch(mediaUrl);
+  assert.equal(media.status, 200);
+  assert.equal(media.headers.get('content-type'), 'image/svg+xml');
+  assert.match(await media.text(), /<svg[\s\S]*Speaker turn[\s\S]*<\/svg>/);
+  assert.equal((await query('another-project')).status, 404);
+  assert.equal((await query(undefined)).status, 400);
+  const after = JSON.parse((await rawRequest(server.url, '/__e2e__/state')).body);
+  assert.deepEqual(after.action, state.action);
+  assert.equal(after.revision, state.revision);
+  assert.deepEqual(after.events, state.events);
+
+  await rawRequest(server.url, '/__e2e__/reset', { scenario: 'baseline', overrides: { projectStyleGuide: null } });
+  assert.equal(JSON.parse((await query(state.project.projectId)).body).result.data.json, null);
+  await rawRequest(server.url, '/__e2e__/control', {
+    procedures: { 'project.getProjectStyleGuide': { error: { status: 503, message: 'Guide unavailable' } } },
+  });
+  const failed = await query(state.project.projectId);
+  assert.equal(failed.status, 503);
+  assert.equal(JSON.parse(failed.body).error.json.message, 'Guide unavailable');
 });
 
 test('enhancement fixture verifies Original bytes, returns same-clock PCM and protects queue ownership', async (t) => {

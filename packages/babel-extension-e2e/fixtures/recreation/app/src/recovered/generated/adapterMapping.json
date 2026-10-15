@@ -1,5 +1,10 @@
 {
-  "editorModuleId": "36978",
+  "editorModuleId": "59327",
+  "nativeModules": {
+    "toaster": "19281",
+    "analyticsContext": "1088",
+    "wireCodec": "64080"
+  },
   "roles": {
     "react": {
       "ids": [

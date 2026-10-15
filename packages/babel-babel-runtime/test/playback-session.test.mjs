@@ -23,7 +23,8 @@ function fixture() {
   const slate = fiber({ turn: { id: 'turn' }, editor: {
     children: [{ children: [{ text: 'Pending' }] }], apply() {}, insertData() {}
   } });
-  const transcript = fiber({ turns: annotations, handlers: { onChangeText() {} } }, slate);
+  const transcript = fiber({ turns: annotations, editingId: null,
+    handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} } }, slate);
   const seeks = [];
   const panel = fiber({ annotations, tracks: [], saveState: {}, renderTranscript() {}, onSave() {},
     onPlayPause() { for (const entry of Object.values(registry)) entry.wavesurfer.playing = !entry.wavesurfer.playing; },
@@ -140,6 +141,30 @@ test('wave membership reuse detects replacement, removal, reorder and late mount
   assert.deepEqual(readBabelPlaybackBindings(model.document).waves, [], 'invalid registries do not replay old sources');
 });
 
+test('wave track identity follows registry keys rather than recording order or reused wave objects', () => {
+  const model = fixture();
+  model.editor.props.transcriptionChunkProcessedRecordings = [
+    { processedRecordingId: 'b', speaker: 2 }, { processedRecordingId: 'a', speaker: 1 }
+  ];
+  const original = readBabelPlaybackBindings(model.document);
+  assert.deepEqual(original.waveTracks, [
+    { trackId: 'a', wave: model.registry.a.wavesurfer },
+    { trackId: 'b', wave: model.registry.b.wavesurfer }
+  ]);
+  const entry = model.registry.b;
+  delete model.registry.b;
+  model.registry.reassigned = entry;
+  assert.equal(original.isCurrent(), false, 'same wave under a different track invalidates an old binding');
+  const current = readBabelPlaybackBindings(model.document);
+  assert.equal(current.waveTracks[1].trackId, 'reassigned');
+  assert.equal(current.waveTracks[1].wave, entry.wavesurfer);
+  assert.equal(original.waveTracks[1].trackId, 'b', 'published identity is not mutated');
+  delete model.registry.a;
+  assert.deepEqual(readBabelPlaybackBindings(model.document).waveTracks, [
+    { trackId: 'reassigned', wave: entry.wavesurfer }
+  ], 'late/removed lanes never shift a wave onto a different recording');
+});
+
 test('native seek resolves current same-task callbacks but rejects superseded task commands', () => {
   const model = fixture();
   const playback = readBabelPlaybackBindings(model.document);
@@ -184,18 +209,19 @@ test('turn identity reads current timing, track, active selection and all permis
   Object.defineProperty(model.panel, 'memoizedState', { get() { assert.fail('Identity must not read native history'); } });
   assert.deepEqual(readBabelTurnIdentity('turn', model.document), {
     reviewActionId: 'task-a', annotationId: 'turn', processedRecordingId: 'a',
-    trackLabel: 'Speaker 1', startSeconds: 1, endSeconds: 2, isActive: true, readOnly: false
+    trackLabel: 'Speaker 1', startSeconds: 1, endSeconds: 2, isActive: true, isEditing: false, readOnly: false
   });
   annotation.startTimeInSeconds = 3;
   annotation.endTimeInSeconds = 5;
   annotation.processedRecordingId = 'b';
   model.panel.props.tracks[1].label = 'Updated speaker';
   model.transcript.props.activeIds.delete('turn');
+  model.transcript.props.editingId = 'turn';
   model.transcript.props.turns = [];
   model.editor.props.reviewActionId = 'task-b';
   assert.deepEqual(readBabelTurnIdentity('turn', model.document), {
     reviewActionId: 'task-b', annotationId: 'turn', processedRecordingId: 'b',
-    trackLabel: 'Updated speaker', startSeconds: 3, endSeconds: 5, isActive: false, readOnly: false
+    trackLabel: 'Updated speaker', startSeconds: 3, endSeconds: 5, isActive: false, isEditing: true, readOnly: false
   }, 'filtered turns do not replace canonical annotation metadata');
   for (const authority of [model.editor, model.panel, model.transcript]) {
     authority.props.readOnly = true;
@@ -268,7 +294,7 @@ test('turn identity follows committed remounts and fails closed when native auth
   model.host.current = root;
   assert.deepEqual(readBabelTurnIdentity('turn', model.document), {
     reviewActionId: 'replacement-task', annotationId: 'turn', processedRecordingId: null,
-    trackLabel: '', startSeconds: 7, endSeconds: null, isActive: false, readOnly: true
+    trackLabel: '', startSeconds: 7, endSeconds: null, isActive: false, isEditing: false, readOnly: true
   });
   panel.child = null;
   assert.equal(readBabelTurnIdentity('turn', model.document), null);

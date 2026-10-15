@@ -198,7 +198,12 @@ function isTranscriptPanelProps(props) {
 }
 
 function isTranscriptProps(props) {
-  return Array.isArray(props?.turns) && typeof props.handlers?.onChangeText === 'function';
+  return Array.isArray(props?.turns) &&
+    (props.editingId === null || typeof props.editingId === 'string') &&
+    typeof props.handlers?.onActivate === 'function' &&
+    typeof props.handlers.onDeactivate === 'function' &&
+    typeof props.handlers.onSelect === 'function' &&
+    typeof props.handlers.onChangeText === 'function';
 }
 
 function isTransportProps(props) {
@@ -344,7 +349,7 @@ function pendingNativeText(root, annotations) {
     const slate = props?.editor;
     if (turnId && committed.has(turnId) && Array.isArray(slate?.children) &&
       typeof slate.apply === 'function' && typeof slate.insertData === 'function') {
-      // Native r1 serializes one paragraph, retaining the raw spelling of tags.
+      // Native iD serializes one paragraph, retaining the raw spelling of tags.
       const children = slate.children[0]?.children;
       if (Array.isArray(children)) {
         const text = children.map(node => typeof node.text === 'string' ? node.text : node.raw).join('');
@@ -371,6 +376,14 @@ export function readBabelSessionState(documentRef = document) {
     reviewActionId: editor.memoizedProps.reviewActionId,
     readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly)
   };
+}
+
+/** Current committed annotation array without Slate, history, or controller discovery. */
+export function readBabelAnnotationBindings(documentRef = document) {
+  const editor = findBabelEditorFiber(documentRef);
+  const panel = findLocatedDescendant(editor, isTranscriptPanelProps)?.memoizedProps;
+  if (!editor || !panel) return null;
+  return { reviewActionId: editor.memoizedProps.reviewActionId, annotations: panel.annotations };
 }
 
 // Native annotation IDs are unique. Cache their positions, not row objects or
@@ -415,6 +428,7 @@ export function readBabelTurnIdentity(annotationId, documentRef = document) {
     startSeconds: annotation.startTimeInSeconds ?? null,
     endSeconds: annotation.endTimeInSeconds ?? null,
     isActive: transcript.activeIds?.has(annotationId) === true,
+    isEditing: transcript.editingId === annotationId,
     readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly)
   };
 }
@@ -436,7 +450,9 @@ export function readBabelTranscriptBindings(documentRef = document) {
     const value = Array.isArray(state) ? state[0] : state;
     // Match owned native operations, not callable RPC proxies or private refs.
     if (value && typeof value === 'object' && Object.hasOwn(value, 'split') &&
-      typeof value.selectTurn === 'function' && typeof value.updateTime === 'function' &&
+      typeof value.editTurn === 'function' && typeof value.leaveTurn === 'function' &&
+      typeof value.selectTurn === 'function' && typeof value.seekTurn === 'function' &&
+      typeof value.updateTime === 'function' &&
       typeof value.updateText === 'function' && typeof value.split === 'function' &&
       typeof value.remove === 'function' && typeof value.toggleWarningAssertion === 'function') {
       controller = value;
@@ -482,27 +498,29 @@ export function readBabelTranscriptBindings(documentRef = document) {
 // current tree. Only stable registry membership is reused, never playback clocks.
 const nativeWaves = new WeakMap();
 const nativeRecordingTracks = new WeakMap();
-const noNativeWaves = Object.freeze([]);
+const noNativeWaves = Object.freeze({ waves: Object.freeze([]), waveTracks: Object.freeze([]) });
 
 function readRegistryWaves(registry) {
   if (!registry || typeof registry !== 'object' || Array.isArray(registry)) return null;
   const previous = nativeWaves.get(registry);
   let count = 0;
-  let waves = previous;
+  let waveTracks = previous?.waveTracks;
   for (const key in registry) {
     if (!Object.prototype.hasOwnProperty.call(registry, key)) continue;
     const wave = registry[key]?.wavesurfer;
     if (typeof wave?.getCurrentTime !== 'function') return null;
-    if (!waves || waves[count] !== wave) {
-      if (waves === previous) waves = previous ? previous.slice(0, count) : [];
-      waves[count] = wave;
+    if (!waveTracks || waveTracks[count]?.wave !== wave || waveTracks[count]?.trackId !== key) {
+      if (waveTracks === previous?.waveTracks) waveTracks = waveTracks ? waveTracks.slice(0, count) : [];
+      waveTracks[count] = { wave, trackId: key };
     }
     count++;
   }
   if (!count) return null;
-  if (waves.length !== count) waves = waves.slice(0, count);
-  if (waves !== previous) nativeWaves.set(registry, waves);
-  return waves;
+  if (waveTracks.length !== count) waveTracks = waveTracks.slice(0, count);
+  if (waveTracks === previous?.waveTracks) return previous;
+  const current = { waves: waveTracks.map(entry => entry.wave), waveTracks };
+  nativeWaves.set(registry, current);
+  return current;
 }
 
 function readEditorWaves(editor) {
@@ -535,7 +553,8 @@ function readRecordingTracks(props) {
 export function readBabelPlaybackBindings(documentRef = document) {
   const editor = findBabelEditorFiber(documentRef);
   if (!editor) return null;
-  const waves = readEditorWaves(editor);
+  const membership = readEditorWaves(editor);
+  const { waves, waveTracks } = membership;
   const recordingTracks = readRecordingTracks(editor.memoizedProps);
   const transport = findLocatedDescendant(editor, isTransportProps)?.memoizedProps;
   const toolbar = findLocatedDescendant(editor, isToolbarProps, editor.memoizedProps.reviewActionId);
@@ -544,10 +563,11 @@ export function readBabelPlaybackBindings(documentRef = document) {
   return {
     reviewActionId,
     waves,
+    waveTracks,
     recordingTracks,
     isCurrent() {
       const current = findBabelEditorFiber(documentRef);
-      if (current?.memoizedProps.reviewActionId !== reviewActionId || readEditorWaves(current) !== waves) return false;
+      if (current?.memoizedProps.reviewActionId !== reviewActionId || readEditorWaves(current) !== membership) return false;
       const tracks = readRecordingTracks(current.memoizedProps);
       if (tracks.length !== recordingTracks.length) return false;
       for (let index = 0; index < tracks.length; index++) {

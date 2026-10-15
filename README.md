@@ -36,11 +36,22 @@ readonly changes and remounts. Missing components fail closed. Playback retains
 unchanged WaveSurfer membership, not clock samples; in-place source replacement
 and track removal are observed on the next read. Native seek/play/speed callbacks
 remain responsible for synchronized transport.
+`waveTracks` retains the actual registry key beside each waveform; consumers must
+not associate filtered/late-mounted waves with recordings by array position.
+Reassigning an existing wave to another key invalidates `isCurrent()`.
+`readBabelAnnotationBindings` reads the current task and committed annotation array
+without materializing pending Slate text, native history or controller bindings.
+It is intended for content-revision/render invalidation, not edit authorization.
 `readBabelTurnIdentity` likewise reads only current row metadata and permissions.
 Its per-array ID index validates the requested ID at its current array position;
 replacement rows are read directly and moved/deleted/renamed IDs trigger index
 rediscovery. Timing, selection, track labels and readonly state are never cached.
 Missing IDs are not cached, so later in-place insertion is immediately visible.
+Current bindings distinguish `isEditing` (native `editingId`) from `isActive`.
+They require the current activation/deactivation/selection callbacks and retain
+native row-local Slate history separately from the global annotation history.
+Read-only authority still blocks Helper writes when native local-only editing is enabled.
+
 
 The native-only `shared session and playback hot-path measurement` browser test
 attaches per-read full-transcript/session/turn-identity/playback timings and live two-track
@@ -102,10 +113,18 @@ Babel tab as the active native target. No third-party replacement package is use
 
 Normal runs use pinned recreation data, not a local capture checkout. After intentionally updating the recovered source, run `npm run snapshot:refresh --workspace @nominy/babel-extension-e2e`, then `npm run e2e:install:recreation`.
 
-The active fixture is the 2026-10-13 captured editor, module `36978`, with
+The active fixture is the 2026-10-15 captured editor, module `59327`, with
 annotation sections and Slate text editing. All four browser projects use it;
 `--grader` adds the Review Grader cases. Submission checks use genuine local
 audio playback to satisfy the new listening gate. No old-editor fallback exists.
+The recreation registers unchanged factories through the native webpack chunk
+boundary, so Helper's exact-version rendering integration is exercised rather
+than bypassed. Its tRPC facade uses captured native query/mutation key shapes,
+including pending-query identification and prefix-based cache invalidation.
+The current graph contains 771 modules, including captured lazy chunks `3329`
+and `4106`. Only verified complete lazy registrations can resolve; unknown chunks
+still fail explicitly. The project style guide uses native Markdown/media rendering
+and captured SuperJSON decoding for its typed update date.
 The previous rebuild and pre-migration tests are privately archived at
 `tools/babel-editor-rebuild/exports/2026-09-05-rebuild-archive.tar.gz` in the
 development checkout. Production adapters use current native turn/Slate bindings;

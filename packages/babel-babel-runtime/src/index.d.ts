@@ -42,6 +42,8 @@ export interface BabelNativeTurnIdentity extends BabelNativeSessionState {
   startSeconds: number | null;
   endSeconds: number | null;
   isActive: boolean;
+  /** Editing ownership is independent of playback/selected active rows. */
+  isEditing: boolean;
 }
 /** MAIN world only; current annotation metadata without Slate text or selection. */
 export declare function readBabelTurnIdentity(annotationId: string, documentRef?: Document): BabelNativeTurnIdentity | null;
@@ -64,14 +66,22 @@ export interface BabelNativeTranscriptBindings {
   };
   transcript: {
     turns: readonly BabelNativeAnnotation[];
+    editingId: string | null;
+    localEdits: boolean;
     handlers: {
+      onActivate(id: string): unknown;
+      onDeactivate(id: string): unknown;
+      onSelect(annotation: BabelNativeAnnotation): unknown;
       onChangeText(id: string, text: string): unknown;
       [key: string]: unknown;
     };
     [key: string]: unknown;
   };
   controller: {
+    editTurn(id: string): unknown;
+    leaveTurn(id: string): unknown;
     selectTurn(annotation: BabelNativeAnnotation): unknown;
+    seekTurn(annotation: BabelNativeAnnotation): unknown;
     updateText(id: string, text: string): unknown;
     updateTime(id: string, time: { start?: number; end?: number }): unknown;
     updateTrack(id: string, trackId: string): unknown;
@@ -92,6 +102,11 @@ export interface BabelNativeTranscriptBindings {
 }
 /** MAIN world only; current committed state and native callbacks, never DOM approximations. */
 export declare function readBabelTranscriptBindings(documentRef?: Document): BabelNativeTranscriptBindings | null;
+/** Lightweight committed annotation access; no pending Slate text or history. */
+export declare function readBabelAnnotationBindings(documentRef?: Document): {
+  reviewActionId: string;
+  annotations: BabelNativeTranscriptBindings['annotations'];
+} | null;
 export interface BabelNativePlaybackBindings {
   reviewActionId: string;
   recordingTracks: ReadonlyArray<{ id: string; label: string }>;
@@ -106,6 +121,8 @@ export interface BabelNativePlaybackBindings {
     un(event: string, listener: (...args: unknown[]) => void): void;
     getMediaElement(): Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
   }>;
+  /** Registry-key identity, independent of filtered lane or recording-array order. */
+  waveTracks: ReadonlyArray<{ trackId: string; wave: BabelNativePlaybackBindings['waves'][number] }>;
   seekToTime: ((seconds: number) => void) | null;
   togglePlayPause: (() => void) | null;
   setSpeed: ((speed: string) => void) | null;

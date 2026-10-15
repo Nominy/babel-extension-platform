@@ -6,6 +6,13 @@ import {
   type UseMutationOptions,
   type UseQueryOptions,
 } from "@tanstack/react-query";
+import { RecoveredRuntime } from "./runtime";
+import adapterMapping from "./generated/adapterMapping.json";
+
+// Use the captured tRPC wire codec; only explicit metadata revives Dates.
+const wireCodec = new RecoveredRuntime().load<{
+  ZP: { deserialize: (value: { json: unknown; meta?: unknown }) => unknown };
+}>(adapterMapping.nativeModules.wireCodec).ZP;
 
 export type ScenarioState = {
   scenario: string;
@@ -82,7 +89,7 @@ export async function requestProcedure<T = unknown>(
     throw new ScenarioApiError(`Invalid tRPC response for ${procedure}`, 502, procedure, "BAD_GATEWAY");
   }
   const data = envelope.result.data;
-  return (data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "json") ? data.json : data) as T;
+  return (data && typeof data === "object" && Object.prototype.hasOwnProperty.call(data, "json") ? wireCodec.deserialize(data) : data) as T;
 }
 
 // Captured editor calls and their query utilities, not canned procedure responses.
@@ -92,6 +99,7 @@ const procedures = [
   "annotations.getReviewActionsForRecordingChunk",
   "backgroundNoise.getNoiseEventsForRecordings",
   "forms.getFormInputsByStepId",
+  "project.getProjectStyleGuide",
   "transcriptionFeedbackForm.acknowledgeFeedback",
   "transcriptionFeedbackForm.getFeedbackReceived",
   "transcriptionFeedbackForm.getFeedbackReceivedList",
@@ -140,8 +148,11 @@ const procedures = [
 type QueryOptions = Omit<UseQueryOptions<unknown, ScenarioApiError>, "queryKey" | "queryFn">;
 type MutationOptions = Omit<UseMutationOptions<unknown, ScenarioApiError, unknown>, "mutationKey" | "mutationFn">;
 
-function queryKey(procedure: string, input?: unknown) {
-  return input === undefined ? [procedure] : [procedure, input];
+function queryKey(procedure: string, input?: unknown, type: "query" | "any" = "query") {
+  // Captured tRPC 47856: cache entries include type, while query filters omit it.
+  const path = procedure.split(".");
+  if (!input && type === "any") return [path];
+  return [path, { ...(input !== undefined ? { input } : {}), ...(type === "query" ? { type } : {}) }];
 }
 
 function strictNamespace(values: Record<string, unknown>, name: string): Record<string, unknown> {
@@ -256,15 +267,15 @@ export function createTrpcFacade(queryClient: QueryClient, audio: ScenarioAudioT
       useMutation(options?: MutationOptions) {
         return useMutation({
           ...options,
-          mutationKey: [procedure],
+          mutationKey: queryKey(procedure, undefined, "any"),
           mutationFn: (input: unknown) => requestProcedure(procedure, input, "POST"),
         }, queryClient);
       },
     };
     utilityMethods[name] = {
-      invalidate: (input?: unknown) => queryClient.invalidateQueries({ queryKey: queryKey(procedure, input) }),
-      refetch: (input?: unknown) => queryClient.refetchQueries({ queryKey: queryKey(procedure, input) }),
-      cancel: (input?: unknown) => queryClient.cancelQueries({ queryKey: queryKey(procedure, input) }),
+      invalidate: (input?: unknown) => queryClient.invalidateQueries({ queryKey: queryKey(procedure, input, "any") }),
+      refetch: (input?: unknown) => queryClient.refetchQueries({ queryKey: queryKey(procedure, input, "any") }),
+      cancel: (input?: unknown) => queryClient.cancelQueries({ queryKey: queryKey(procedure, input, "any") }),
       fetch: (input?: unknown) => queryClient.fetchQuery({ queryKey: queryKey(procedure, input), queryFn: ({ signal }) => queryProcedure(procedure, input, signal) }),
       prefetch: (input?: unknown) => queryClient.prefetchQuery({ queryKey: queryKey(procedure, input), queryFn: ({ signal }) => queryProcedure(procedure, input, signal) }),
       getData: (input?: unknown) => queryClient.getQueryData(queryKey(procedure, input)),

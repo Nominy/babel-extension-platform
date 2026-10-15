@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { subscribeBabelEditorCommits, readBabelSessionState } from '../src/index.mjs';
 
 function fixture() {
-  const transcript = { memoizedProps: { turns: [], handlers: { onChangeText() {} } } };
+  const transcript = { memoizedProps: { turns: [], editingId: null,
+    handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} } } };
   const panel = { memoizedProps: { annotations: [], saveState: {}, renderTranscript() {}, onSave() {} }, child: transcript };
   const editor = { memoizedProps: { reviewActionId: 'a', transcriptionChunkProcessedRecordings: [] }, child: panel };
   const root = { child: editor };

@@ -2,6 +2,7 @@ import React from "react";
 import { QueryClientProvider, useQuery, type QueryClient } from "@tanstack/react-query";
 import { createRecoveredAdapters } from "./adapters";
 import { RecoveredRuntime, RECOVERED_EDITOR_MODULE_ID } from "./runtime";
+import adapterMapping from "./generated/adapterMapping.json";
 import {
   createScenarioAudioTransport,
   createScenarioQueryClient,
@@ -145,7 +146,7 @@ class NativeErrorBoundary extends React.Component<{ children: React.ReactNode },
 
 function ProjectsRoute({ scenario }: { scenario: ScenarioState }) {
   const projects = useQuery({
-    queryKey: ["worker.getProjects"],
+    queryKey: [["worker", "getProjects"], { type: "query" }],
     queryFn: ({ signal }) => requestProcedure<ScenarioState["project"][]>("worker.getProjects", undefined, "GET", signal),
   });
   return (
@@ -194,7 +195,7 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
     }));
     const editor = runtime.load<RecoveredEditorModule>(RECOVERED_EDITOR_MODULE_ID);
     if (!editor.RecoveredPageController || !editor.RecoveredEditorWorkbench || !editor.RecoveredTranscriptPanel) throw new Error("Captured native editor exports are incomplete");
-    return { editor, audioTransport, Toaster: runtime.load<{ Toaster: React.ComponentType }>("61704").Toaster };
+    return { editor, audioTransport, Toaster: runtime.load<{ Toaster: React.ComponentType }>(adapterMapping.nativeModules.toaster).Toaster };
   });
   const route = useRecoveredLocation();
   const [revision, refresh] = React.useReducer((value: number) => value + 1, 0);
