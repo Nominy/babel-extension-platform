@@ -220,24 +220,47 @@ function isSpeedSelectProps(props) {
     typeof props.onValueChange === 'function';
 }
 
+const nativeRootSeeds = new WeakMap();
+
+function readSeedRoot(seed, key) {
+  if (seed.isConnected === false) return null;
+  let fiber = key ? seed[key] : null;
+  let slow = fiber, fast = fiber;
+  while (fiber?.return) {
+    fiber = fiber.return;
+    slow = slow?.return;
+    fast = fast?.return?.return;
+    if (fast && fast === slow) return null;
+  }
+  return fiber?.stateNode?.current ? fiber.stateNode : null;
+}
+
 // The native workbench owns recording identity and WaveSurfer refs. MAIN only.
 // Normal reads need the two stable surfaces, not every rendered annotation.
 function findBabelEditorLocation(documentRef, rootOnly) {
+  const cached = nativeRootSeeds.get(documentRef);
+  if (cached) {
+    const { seed, key } = cached;
+    const root = seed.isConnected === true && (!seed.ownerDocument || seed.ownerDocument === documentRef)
+      ? readSeedRoot(seed, key) : null;
+    const editor = root && findLocatedDescendant(root.current, isEditorProps);
+    if (editor) return rootOnly ? root : editor;
+    nativeRootSeeds.delete(documentRef);
+  }
   const roots = new Set();
   for (const selector of ['main, [data-transcript-scroll]', 'section[data-annotation-id]']) {
     for (const seed of documentRef.querySelectorAll(selector)) {
       const key = Object.getOwnPropertyNames(seed).find((name) => name.startsWith('__reactFiber$'));
-      let fiber = key ? seed[key] : null;
-      const visited = new Set();
-      while (fiber?.return && !visited.has(fiber)) {
-        visited.add(fiber);
-        fiber = fiber.return;
-      }
-      const root = fiber?.stateNode?.current;
+      const root = readSeedRoot(seed, key);
       if (!root || roots.has(root)) continue;
       roots.add(root);
-      const editor = findLocatedDescendant(root, isEditorProps);
-      if (editor) return rootOnly ? fiber.stateNode : editor;
+      const editor = findLocatedDescendant(root.current, isEditorProps);
+      if (editor) {
+        // Retain a DOM location only. Each hit follows its live React link and
+        // the actual root.current, including same-pointer and alternate commits.
+        if (seed.isConnected === true) nativeRootSeeds.set(documentRef, { seed, key });
+        return rootOnly ? root : editor;
+      }
     }
   }
   return null;
@@ -620,6 +643,79 @@ export function readBabelTurnIdentity(annotationId, documentRef = document) {
     isActive: transcript.activeIds?.has(annotationId) === true,
     isEditing: transcript.editingId === annotationId,
     readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly)
+  };
+}
+
+/**
+ * Presentation-only committed row metadata. The owner calls reconcile(true)
+ * after a native commit; mutations must still use the live ownership readers.
+ * Playback-only props are not a revision boundary. Same-pointer commits are
+ * deliberately reconciled: pointer equality is not authorization.
+ */
+export function createBabelRowIdentityIndex(documentRef = document) {
+  let previousRoot = null, previousAnnotations = null, previousTracks = null;
+  let records = [], snapshot = null, revision = 0;
+  let labels = new Map();
+  return {
+    reconcile(committed = false) {
+      const root = findBabelEditorLocation(documentRef, true)?.current;
+      const editor = findLocatedDescendant(root, isEditorProps);
+      const panel = findLocatedDescendant(editor, isTranscriptPanelProps)?.memoizedProps;
+      const transcript = findLocatedDescendant(editor, isTranscriptProps)?.memoizedProps;
+      if (!editor || !panel || !transcript) {
+        if (snapshot) revision++;
+        previousRoot = previousAnnotations = previousTracks = snapshot = null;
+        records = [];
+        labels.clear();
+        return null;
+      }
+      const reviewActionId = editor.memoizedProps.reviewActionId;
+      const readOnly = Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly);
+      const samePointerCommit = committed && previousRoot === root;
+      let labelsChanged = false;
+      if (!snapshot || previousTracks !== panel.tracks || samePointerCommit) {
+        const nextLabels = new Map((panel.tracks || []).map(track => [track.id, track.label ?? '']));
+        labelsChanged = labels.size !== nextLabels.size;
+        if (!labelsChanged) for (const [id, label] of nextLabels) {
+          if (!labels.has(id) || labels.get(id) !== label) { labelsChanged = true; break; }
+        }
+        labels = nextLabels;
+      }
+      const changedBoundary = !snapshot || snapshot.reviewActionId !== reviewActionId ||
+        previousAnnotations !== panel.annotations || labelsChanged ||
+        records.length !== panel.annotations.length || samePointerCommit;
+      if (committed || !snapshot) previousRoot = root;
+      previousAnnotations = panel.annotations;
+      previousTracks = panel.tracks;
+      let identities = snapshot?.identities || [];
+      if (changedBoundary) {
+        const next = [];
+        let changed = !snapshot || snapshot.reviewActionId !== reviewActionId || records.length !== panel.annotations.length;
+        for (let index = 0; index < panel.annotations.length; index++) {
+          const annotation = panel.annotations[index];
+          const record = [annotation.id, annotation.processedRecordingId ?? null,
+            annotation.startTimeInSeconds ?? null, annotation.endTimeInSeconds ?? null,
+            labels.get(annotation.processedRecordingId) ?? '', annotation.content ?? '', annotation.type];
+          const previous = records[index];
+          if (!previous || record.some((value, field) => !Object.is(value, previous[field]))) changed = true;
+          next.push(record);
+        }
+        records = next;
+        if (changed) {
+          revision++;
+          identities = records.map(([annotationId, processedRecordingId, startSeconds, endSeconds, trackLabel]) =>
+            ({ reviewActionId, annotationId, processedRecordingId, startSeconds, endSeconds, trackLabel }));
+        }
+      }
+      snapshot = { reviewActionId, readOnly, revision, identities,
+        activeIds: Array.from(transcript.activeIds || []), editingId: transcript.editingId };
+      return snapshot;
+    },
+    dispose() {
+      previousRoot = previousAnnotations = previousTracks = snapshot = null;
+      records = [];
+      labels.clear();
+    }
   };
 }
 

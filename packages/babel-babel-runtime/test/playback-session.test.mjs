@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readBabelPlaybackBindings, readBabelSessionState, readBabelTranscriptBindings, readBabelTurnIdentity } from '../src/index.mjs';
+import { readBabelPlaybackBindings, readBabelSessionState, readBabelTranscriptBindings, readBabelTurnIdentity, createBabelRowIdentityIndex } from '../src/index.mjs';
 
 function fixture() {
   const counters = { props: 0, text: 0, selectors: [] };
@@ -47,14 +47,14 @@ function fixture() {
   const root = fiber({}, editor);
   const host = { current: root };
   root.stateNode = host;
-  const seed = { __reactFiber$native: editor };
+  const seed = { __reactFiber$native: editor, isConnected: true };
   let mounted = true;
   const document = { querySelectorAll(selector) {
     counters.selectors.push(selector);
     return mounted ? [seed] : [];
   } };
-  return { counters, fiber, wave, registry, panel, transcript, slate, toolbar, select, editor, root, host, document, seeks,
-    setMounted(value) { mounted = value; },
+  return { counters, fiber, wave, registry, panel, transcript, slate, toolbar, select, editor, root, host, document, seed, seeks,
+    setMounted(value) { mounted = seed.isConnected = value; },
     resetCounters() { counters.props = counters.text = 0; counters.selectors.length = 0; }
   };
 }
@@ -77,6 +77,57 @@ test('warm session and playback reads avoid transcript traversal and text materi
   assert.equal(model.counters.text, 0);
   assert.ok(model.counters.props < 2000, `warm reads visited ${model.counters.props} props`);
   assert.ok(model.counters.selectors.every(selector => !selector.includes('section')));
+});
+
+test('successful connected root seeds avoid DOM rediscovery while every reader follows current committed data', () => {
+  const model = fixture();
+  assert.equal(readBabelSessionState(model.document).reviewActionId, 'task-a');
+  model.resetCounters();
+  for (let frame = 0; frame < 100; frame++) {
+    assert.equal(readBabelSessionState(model.document).reviewActionId, 'task-a');
+    assert.equal(readBabelTurnIdentity('turn', model.document).reviewActionId, 'task-a');
+    assert.equal(readBabelPlaybackBindings(model.document).waves.length, 2);
+  }
+  assert.equal(model.counters.selectors.length, 0, 'warm readers never scan the transcript DOM for root seeds');
+  model.editor.props.reviewActionId = 'same-pointer-task';
+  model.transcript.props.readOnly = true;
+  assert.deepEqual(readBabelSessionState(model.document), { reviewActionId: 'same-pointer-task', readOnly: true });
+  const transcript = model.fiber({ ...model.transcript.props, readOnly: false });
+  const panel = model.fiber({ ...model.panel.props, annotations: [{ id: 'turn', startTimeInSeconds: 9 }] }, transcript);
+  const editor = model.fiber({ ...model.editor.props, reviewActionId: 'alternate-task' }, panel);
+  const root = model.fiber({}, editor);
+  root.alternate = model.root;
+  root.stateNode = model.host;
+  editor.alternate = model.editor;
+  model.host.current = root;
+  assert.deepEqual(readBabelSessionState(model.document), { reviewActionId: 'alternate-task', readOnly: false });
+  assert.equal(readBabelTurnIdentity('turn', model.document).startSeconds, 9);
+  assert.equal(model.counters.selectors.length, 0, 'a committed alternate does not require DOM rediscovery');
+});
+
+test('cached root seeds follow same-surface root replacement, reject detached nodes and rediscover after reappearance', () => {
+  const model = fixture(), replacement = fixture();
+  readBabelSessionState(model.document);
+  model.resetCounters();
+  replacement.editor.props.reviewActionId = 'replacement-task';
+  model.seed.__reactFiber$native = replacement.editor;
+  model.editor.props.reviewActionId = 'stale-task';
+  assert.equal(readBabelSessionState(model.document).reviewActionId, 'replacement-task');
+  assert.equal(model.counters.selectors.length, 0, 'same connected surface follows its new native root directly');
+  model.setMounted(false);
+  assert.equal(readBabelSessionState(model.document), null, 'a detached successful seed is never authority');
+  model.resetCounters();
+  model.setMounted(true);
+  assert.equal(readBabelSessionState(model.document).reviewActionId, 'replacement-task');
+  assert.equal(model.counters.selectors.length, 1, 'reappearance performs one successful discovery');
+  model.resetCounters();
+  delete model.seed.__reactFiber$native;
+  model.seed.__reactFiber$newRenderer = replacement.editor;
+  assert.equal(readBabelSessionState(model.document).reviewActionId, 'replacement-task');
+  assert.equal(model.counters.selectors.length, 1, 'changed renderer keys invalidate the cached location');
+  model.resetCounters();
+  assert.equal(readBabelSessionState(model.document).reviewActionId, 'replacement-task');
+  assert.equal(model.counters.selectors.length, 0);
 });
 
 test('session permissions follow every authority even with unchanged task and Fiber identities', () => {
@@ -301,6 +352,68 @@ test('turn identity follows committed remounts and fails closed when native auth
   panel.child = transcript;
   model.setMounted(false);
   assert.equal(readBabelTurnIdentity('turn', model.document), null);
+});
+
+test('committed row revisions ignore playback-only props and keep active/editing state independent', () => {
+  const model = fixture();
+  const index = createBabelRowIdentityIndex(model.document);
+  Object.assign(model.panel.props.annotations[0], { startTimeInSeconds: 1, endTimeInSeconds: 3, processedRecordingId: 'a' });
+  const initial = index.reconcile();
+  model.resetCounters();
+  for (let tick = 0; tick < 20; tick++) {
+    model.panel.props = { ...model.panel.props, currentTime: tick, tracks: model.panel.props.tracks.slice() };
+    model.editor.props = { ...model.editor.props, currentTime: tick };
+    model.transcript.props.activeIds = new Set(tick % 2 ? ['turn'] : []);
+    model.transcript.props.editingId = tick % 2 ? 'turn' : null;
+    const root = model.fiber({}, model.editor);
+    root.stateNode = model.host;
+    root.alternate = model.host.current;
+    model.host.current = root;
+    const next = index.reconcile(true);
+    assert.equal(next.revision, initial.revision);
+    assert.equal(next.identities, initial.identities);
+    assert.deepEqual(next.activeIds, tick % 2 ? ['turn'] : []);
+    assert.equal(next.editingId, tick % 2 ? 'turn' : null);
+  }
+  assert.equal(model.counters.text, 0, 'playback-only commits do not inspect unchanged annotation content');
+  model.panel.props.annotations = model.panel.props.annotations.slice();
+  assert.equal(index.reconcile(true).revision, initial.revision, 'equivalent canonical arrays do not publish a false edit');
+  index.dispose();
+});
+
+test('row revisions reconcile native in-place commits, canonical filters, task replacement and disposal', () => {
+  const model = fixture(), index = createBabelRowIdentityIndex(model.document);
+  model.panel.props.annotations = [
+    { id: 'one', startTimeInSeconds: 1, endTimeInSeconds: 3, processedRecordingId: 'a', content: 'one' },
+    { id: 'two', startTimeInSeconds: 4, endTimeInSeconds: 6, processedRecordingId: 'b', content: 'two' }
+  ];
+  model.panel.props.tracks = [{ id: 'a', label: 'First' }, { id: 'b', label: 'Second' }];
+  const initial = index.reconcile();
+  model.panel.props.annotations[0].startTimeInSeconds = 2;
+  model.panel.props.tracks[0].label = 'Renamed';
+  const edited = index.reconcile(true);
+  assert.ok(edited.revision > initial.revision);
+  assert.equal(edited.identities[0].startSeconds, 2);
+  assert.equal(edited.identities[0].trackLabel, 'Renamed');
+  assert.equal(initial.identities[0].startSeconds, 1, 'old presentations cannot change under consumers');
+  model.transcript.props.turns = [];
+  const filtered = index.reconcile(true);
+  assert.equal(filtered.revision, edited.revision);
+  assert.equal(filtered.identities.length, 2, 'canonical annotations are not replaced by the filtered transcript');
+  model.panel.props.annotations.reverse();
+  const reordered = index.reconcile(true);
+  assert.equal(reordered.identities[0].annotationId, 'two');
+  model.editor.props.reviewActionId = 'task-b';
+  const replaced = index.reconcile(true);
+  assert.ok(replaced.identities.every(identity => identity.reviewActionId === 'task-b'));
+  assert.ok(replaced.revision > reordered.revision);
+  model.setMounted(false);
+  assert.equal(index.reconcile(true), null);
+  model.setMounted(true);
+  assert.equal(index.reconcile().identities[0].reviewActionId, 'task-b');
+  index.dispose();
+  model.panel.props.annotations[0].content = 'edited after dispose';
+  assert.ok(index.reconcile().revision > replaced.revision, 'disposed indexes retain no old annotation snapshots');
 });
 
 test('playback lifetime predicate validates live refs and small recording metadata without transcript traversal', () => {

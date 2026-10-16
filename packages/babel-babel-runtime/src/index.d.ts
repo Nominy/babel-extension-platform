@@ -47,6 +47,17 @@ export interface BabelNativeTurnIdentity extends BabelNativeSessionState {
 }
 /** MAIN world only; current annotation metadata without Slate text or selection. */
 export declare function readBabelTurnIdentity(annotationId: string, documentRef?: Document): BabelNativeTurnIdentity | null;
+/** Presentation-only data; never authorizes native edits or input ownership. */
+export interface BabelRowIdentityIndexState extends BabelNativeSessionState {
+  revision: number;
+  identities: Omit<BabelNativeTurnIdentity, 'readOnly' | 'isActive' | 'isEditing'>[];
+  activeIds: string[];
+  editingId: string | null;
+}
+export declare function createBabelRowIdentityIndex(documentRef?: Document): {
+  reconcile(committed?: boolean): BabelRowIdentityIndexState | null;
+  dispose(): void;
+};
 /** Genuine September input state; operations remain owned by the live native task. */
 export interface BabelClassicInput {
   readonly annotation: BabelNativeAnnotation;
