@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "private": true,
-  "snapshotVersion": "4574145770fd18ede0cebe410549b431f6448adc2ad05161aa8e7a298f149655",
+  "snapshotVersion": "4a98540789a79cf0660404265492e16afcb20d935086a169d5775b651bd9f69b",
   "provenance": {
     "formatVersion": 2,
     "sourceKind": "captured-webpack-function-factories",
@@ -11912,9 +11912,9 @@
     },
     {
       "path": "src/recovered/RecoveredBabelApp.tsx",
-      "bytes": 12555,
-      "sha256": "2fe7b9b9f735a31aef2047a6c2aa9ac8a6d2c47dfa659ffa1dc48da19c5c6233",
-      "sourceSha256": "2fe7b9b9f735a31aef2047a6c2aa9ac8a6d2c47dfa659ffa1dc48da19c5c6233"
+      "bytes": 12794,
+      "sha256": "385f614eb78cb699f9204f1256008deeb4a21981e8805015e50a568316fda860",
+      "sourceSha256": "385f614eb78cb699f9204f1256008deeb4a21981e8805015e50a568316fda860"
     },
     {
       "path": "src/recovered/runtime.ts",
@@ -11924,9 +11924,9 @@
     },
     {
       "path": "src/recovered/scenario-client.ts",
-      "bytes": 15530,
-      "sha256": "8329575c6e67c84296b980eff8e4fa412e883dc18900d3bc622822b559e4ea04",
-      "sourceSha256": "8329575c6e67c84296b980eff8e4fa412e883dc18900d3bc622822b559e4ea04"
+      "bytes": 16498,
+      "sha256": "85ae07a057b4b2f65ad233fc1219220bdc91c189f0a9f50e92bd740991fc97c0",
+      "sourceSha256": "85ae07a057b4b2f65ad233fc1219220bdc91c189f0a9f50e92bd740991fc97c0"
     },
     {
       "path": "src/styles.css",

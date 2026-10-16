@@ -154,6 +154,9 @@ export async function startScenarioServer(options = {}) {
   function actionById(id) {
     if (id === state.action.actionId) return state.action;
     if (id === state.referenceAction.actionId) return state.referenceAction;
+    const historical = state.historicalActions?.find(action => action.actionId === id &&
+      action.transcriptionChunkId === state.action.transcriptionChunkId);
+    if (historical) return historical;
     throw new HttpError(404, `Review action not found: ${id}`, 'NOT_FOUND');
   }
   function editable(body) {
@@ -169,7 +172,12 @@ export async function startScenarioServer(options = {}) {
     event('annotations-saved', { reviewActionId: action.actionId, revision: state.revision });
     return { success: true, revision: state.revision };
   }
-  function reviewActions() { return [state.referenceAction, state.action].map((a) => ({ id: a.actionId, reviewActionId: a.actionId, level: a.actionLevel, actionLevel: a.actionLevel, workerId: a.actionWorkerId, createdAt: FIXED_TIME, decision: a.actionDecision })); }
+  function reviewActions() {
+    return [state.referenceAction, ...(state.historicalActions ?? []), state.action]
+      .filter(action => action.transcriptionChunkId === state.action.transcriptionChunkId)
+      .map(a => ({ id: a.actionId, reviewActionId: a.actionId, level: a.actionLevel, actionLevel: a.actionLevel,
+        workerId: a.actionWorkerId, createdAt: a.createdAt ?? FIXED_TIME, decision: a.actionDecision }));
+  }
   function procedure(name, body) {
     switch (name) {
       case 'transcriptions.getWorkerPermissionsForProject': return state.permissions;

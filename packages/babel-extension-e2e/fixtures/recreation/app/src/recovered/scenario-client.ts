@@ -246,10 +246,23 @@ export function createScenarioAudioTransport(scenario: ScenarioState): ScenarioA
 }
 
 export function createTrpcFacade(queryClient: QueryClient, audio: ScenarioAudioTransport) {
-  const queryProcedure = async (procedure: string, input: unknown, signal?: AbortSignal) => {
-    const data = await requestProcedure(procedure, input, "GET", signal);
-    return procedure === "transcriptions.getPresignedChunkUrls" ? audio.transform(data, signal) : data;
-  };
+  class ScenarioTrpcClient {
+    requestAsPromise(request: { type: "query" | "mutation"; path: string; input: unknown; signal?: AbortSignal }) {
+      if (!procedures.includes(request.path)) throw new Error(`Uncaptured tRPC procedure: ${request.path}`);
+      return requestProcedure(request.path, request.input, request.type === "query" ? "GET" : "POST", request.signal);
+    }
+    async query(procedure: string, input: unknown, options: { signal?: AbortSignal } = {}) {
+      const data = await this.requestAsPromise({ type: "query", path: procedure, input, signal: options.signal });
+      return procedure === "transcriptions.getPresignedChunkUrls" ? audio.transform(data, options.signal) : data;
+    }
+    mutation(procedure: string, input: unknown, options: { signal?: AbortSignal } = {}) {
+      return this.requestAsPromise({ type: "mutation", path: procedure, input, signal: options.signal });
+    }
+  }
+  const client = new ScenarioTrpcClient();
+  const providerValue = { client, queryClient };
+  const context = React.createContext(providerValue);
+  const queryProcedure = (procedure: string, input: unknown, signal?: AbortSignal) => client.query(procedure, input, { signal });
   const api: Record<string, unknown> = {};
   const utils: Record<string, unknown> = {};
   for (const procedure of procedures) {
@@ -268,7 +281,7 @@ export function createTrpcFacade(queryClient: QueryClient, audio: ScenarioAudioT
         return useMutation({
           ...options,
           mutationKey: queryKey(procedure, undefined, "any"),
-          mutationFn: (input: unknown) => requestProcedure(procedure, input, "POST"),
+          mutationFn: (input: unknown) => client.mutation(procedure, input),
         }, queryClient);
       },
     };
@@ -289,7 +302,7 @@ export function createTrpcFacade(queryClient: QueryClient, audio: ScenarioAudioT
   const utilities = strictNamespace({ ...utils, invalidate: () => queryClient.invalidateQueries() }, "utils");
   return {
     h: strictNamespace({ ...api, useUtils: () => utilities }, "trpc"),
-    TRPCReactProvider: ({ children }: { children: React.ReactNode }) => children,
+    TRPCReactProvider: ({ children }: { children: React.ReactNode }) => React.createElement(context.Provider, { value: providerValue }, children),
   };
 }
 

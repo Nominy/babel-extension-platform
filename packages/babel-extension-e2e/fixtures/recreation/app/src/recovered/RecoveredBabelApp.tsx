@@ -195,7 +195,11 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
     }));
     const editor = runtime.load<RecoveredEditorModule>(RECOVERED_EDITOR_MODULE_ID);
     if (!editor.RecoveredPageController || !editor.RecoveredEditorWorkbench || !editor.RecoveredTranscriptPanel) throw new Error("Captured native editor exports are incomplete");
-    return { editor, audioTransport, Toaster: runtime.load<{ Toaster: React.ComponentType }>(adapterMapping.nativeModules.toaster).Toaster };
+    return {
+      editor, audioTransport,
+      TrpcProvider: runtime.load<{ TRPCReactProvider: React.ComponentType<React.PropsWithChildren> }>(adapterMapping.roles.trpc.ids[0]).TRPCReactProvider,
+      Toaster: runtime.load<{ Toaster: React.ComponentType }>(adapterMapping.nativeModules.toaster).Toaster
+    };
   });
   const route = useRecoveredLocation();
   const [revision, refresh] = React.useReducer((value: number) => value + 1, 0);
@@ -217,9 +221,10 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
   }, [route, scenario.route]);
   const { RecoveredPageController: PageController } = native.editor;
   const Toaster = native.Toaster;
+  const TrpcProvider = native.TrpcProvider;
   const pathname = new URL(route, window.location.origin).pathname;
   return (
-    <>
+    <TrpcProvider>
       <div data-recovered-shell style={{ display: "flex", minHeight: "100svh" }}>
         <aside aria-label="Local sidebar" style={{ width: 64, flexShrink: 0 }} />
         <main ref={root} className={`recovered-babel-root flex-1${pathname.startsWith("/transcription/") ? " relative flex min-h-svh flex-col h-svh overflow-hidden" : ""}`} data-recovered-scenario={scenario.scenario} data-recovered-module={RECOVERED_EDITOR_MODULE_ID} data-recovered-ready={route !== "/"}>
@@ -230,7 +235,7 @@ function NativeScene({ scenario, queryClient }: { scenario: ScenarioState; query
         </main>
       </div>
       <Toaster />
-    </>
+    </TrpcProvider>
   );
 }
 
