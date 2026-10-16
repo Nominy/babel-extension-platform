@@ -335,17 +335,200 @@ function findDescendant(root, matches) {
   return null;
 }
 
-function pendingNativeText(root, annotations) {
+// A document-owned lease is shared by independently bundled MAIN entrypoints.
+// DOM markers are discovery only: every read verifies the current native Fiber.
+const classicInputsKey = Symbol.for('babel-helper/classic-inputs/september5-v1');
+const classicInputIndexKey = Symbol.for('babel-helper/classic-input-index/september5-v1');
+
+function classicInputs(documentRef, create = false) {
+  const descriptor = Object.getOwnPropertyDescriptor(documentRef, classicInputsKey);
+  if (descriptor) {
+    if (!('value' in descriptor) || !(descriptor.value instanceof Map)) throw new Error('classic-input-registry-invalid');
+    return descriptor.value;
+  }
+  if (!create) return null;
+  const inputs = new Map();
+  Object.defineProperty(documentRef, classicInputsKey, { value: inputs, configurable: true });
+  return inputs;
+}
+
+function classicInputIndex(inputs) {
+  const descriptor = Object.getOwnPropertyDescriptor(inputs, classicInputIndexKey);
+  if (descriptor) {
+    if (!('value' in descriptor) || !(descriptor.value?.byId instanceof Map) ||
+        !(descriptor.value.roots instanceof WeakMap)) throw new Error('classic-input-index-invalid');
+    return descriptor.value;
+  }
+  const index = { byId: new Map(), roots: new WeakMap() };
+  for (const [row, input] of inputs) {
+    const id = input.annotation?.id;
+    let rows = index.byId.get(id);
+    if (!rows) index.byId.set(id, rows = new Set());
+    rows.add(row);
+  }
+  Object.defineProperty(inputs, classicInputIndexKey, { value: index });
+  return index;
+}
+
+export function registerBabelClassicInput(row, input) {
+  const inputs = classicInputs(row.ownerDocument, true);
+  if (inputs.has(row) && inputs.get(row) !== input) throw new Error('classic-input-already-owned');
+  const index = classicInputIndex(inputs);
+  const id = input.annotation?.id;
+  let rows = index.byId.get(id);
+  if (!rows) index.byId.set(id, rows = new Set());
+  rows.add(row);
+  inputs.set(row, input);
+  return () => {
+    if (inputs.get(row) !== input) return;
+    inputs.delete(row);
+    rows.delete(row);
+    if (!rows.size && index.byId.get(id) === rows) index.byId.delete(id);
+  };
+}
+
+function ownsClassicInput(row, input, root, annotation, committedOwner) {
+  const source = input.annotation;
+  return Boolean(root && annotation && row.isConnected && row.getAttribute('data-babel-classic-row') === 'true' &&
+    row.getAttribute('data-annotation-id') === annotation.id &&
+    root.memoizedProps.reviewActionId === input.reviewActionId &&
+    source && source.id === annotation.id && source.processedRecordingId === annotation.processedRecordingId &&
+    source.startTimeInSeconds === annotation.startTimeInSeconds && source.endTimeInSeconds === annotation.endTimeInSeconds &&
+    (source.content ?? '') === (annotation.content ?? '') &&
+    committedOwner?.turn?.id === annotation.id && committedOwner.handlers === input.handlers);
+}
+
+// Store paths, never authorization-bearing Fibers/props. A single walk indexes
+// all registered rows and the two real native surfaces, even in large tasks.
+function indexClassicLocations(root, inputs, index) {
+  const rows = new WeakMap(), owners = new Map();
+  const native = new Map();
+  let panel = null, transcript = null;
+  const pending = root ? [{ fiber: root, parent: null, index: -1, owner: null }] : [];
+  const visited = new Set();
+  while (pending.length) {
+    const entry = pending.pop(), fiber = entry.fiber;
+    if (!fiber || visited.has(fiber)) continue;
+    visited.add(fiber);
+    const props = fiber.memoizedProps;
+    const owner = typeof props?.turn?.id === 'string' && props.handlers ? props : entry.owner;
+    const row = inputs.has(fiber.stateNode) ? fiber.stateNode : null;
+    const isPanel = !panel && isTranscriptPanelProps(props);
+    const isTranscript = !transcript && isTranscriptProps(props);
+    if (row || isPanel || isTranscript) {
+      const path = [];
+      for (let edge = entry; edge.parent; edge = edge.parent) path.push(edge.index);
+      path.reverse();
+      if (row) { rows.set(row, path); owners.set(row, owner); }
+      if (isPanel) { panel = props; native.set(isTranscriptPanelProps, path); }
+      if (isTranscript) { transcript = props; native.set(isTranscriptProps, path); }
+    }
+    if (entry.parent && fiber.sibling) {
+      pending.push({ fiber: fiber.sibling, parent: entry.parent, index: entry.index + 1, owner: entry.owner });
+    }
+    if (fiber.child) pending.push({ fiber: fiber.child, parent: entry, index: 0, owner });
+  }
+  if (root) {
+    index.roots.set(root, rows);
+    const locations = nativeLocations.get(root) || nativeLocations.get(root.alternate) || new Map();
+    for (const [matches, path] of native) locations.set(matches, path);
+    nativeLocations.set(root, locations);
+  }
+  return { panel, transcript, owners };
+}
+
+function locatedClassicOwner(root, row, index) {
+  const locations = index.roots.get(root) || index.roots.get(root?.alternate);
+  const path = locations?.get(row);
+  if (!path) return null;
+  let fiber = root, owner = null;
+  for (let depth = 0; fiber; depth++) {
+    const props = fiber.memoizedProps;
+    if (typeof props?.turn?.id === 'string' && props.handlers) owner = props;
+    if (depth === path.length) return fiber.stateNode === row ? owner : null;
+    fiber = fiber.child;
+    for (let sibling = 0; fiber && sibling < path[depth]; sibling++) fiber = fiber.sibling;
+  }
+  return null;
+}
+
+export function readBabelClassicInput(annotationId, documentRef = document) {
+  const inputs = classicInputs(documentRef);
+  if (!inputs?.size) return null;
+  const index = classicInputIndex(inputs), rows = index.byId.get(annotationId);
+  if (!rows?.size) return null;
+  const root = findBabelEditorFiber(documentRef);
+  if (!root) return null;
+  // First use or structural drift rebuilds once, not once per registered row.
+  let rebuilt = null;
+  if (!index.roots.get(root) && !index.roots.get(root.alternate)) rebuilt = indexClassicLocations(root, inputs, index);
+  let panel = rebuilt ? rebuilt.panel : findLocatedDescendant(root, isTranscriptPanelProps)?.memoizedProps;
+  let transcript = rebuilt ? rebuilt.transcript : findLocatedDescendant(root, isTranscriptProps)?.memoizedProps;
+  for (const row of rows) {
+    const input = inputs.get(row);
+    if (!input) continue;
+    let owner = rebuilt ? rebuilt.owners.get(row) : locatedClassicOwner(root, row, index);
+    if (!owner && !rebuilt) {
+      rebuilt = indexClassicLocations(root, inputs, index);
+      panel = rebuilt.panel; transcript = rebuilt.transcript;
+      owner = rebuilt.owners.get(row);
+    }
+    const annotation = panel && findCurrentAnnotation(panel.annotations, annotationId);
+    if (!annotation || !transcript || input.handlers !== transcript.handlers ||
+        !ownsClassicInput(row, input, root, annotation, owner)) continue;
+    return { row, input, annotation, readOnly: Boolean(root.memoizedProps.readOnly || panel.readOnly ||
+      transcript.readOnly || input.readOnly) };
+  }
+  return null;
+}
+
+export function flushBabelClassicInputs(documentRef = document) {
+  const inputs = classicInputs(documentRef);
+  if (!inputs?.size) return true;
+  const root = findBabelEditorFiber(documentRef);
+  if (!root) return false;
+  const { panel, transcript, owners } = indexClassicLocations(root, inputs, classicInputIndex(inputs));
+  if (!panel || !transcript) return false;
+  const annotations = new Map(panel.annotations.map(annotation => [annotation.id, annotation]));
+  const readOnly = Boolean(root.memoizedProps.readOnly || panel.readOnly || transcript.readOnly);
+  const pending = [];
+  // Every source and permission is checked before any row's native writer runs.
+  // The path index also lets each writer cheaply recheck the current commit.
+  for (const [row, input] of inputs) {
+    const annotation = annotations.get(input.annotation?.id);
+    if (input.handlers !== transcript.handlers || !ownsClassicInput(row, input, root, annotation, owners.get(row))) return false;
+    const state = input.read();
+    if (state.composing) return false;
+    if (state.text !== (annotation.content ?? '')) {
+      if (readOnly || input.readOnly) return false;
+      pending.push(input);
+    }
+  }
+  for (const input of pending) if (input.flush() === false) return false;
+  return true;
+}
+
+function pendingNativeText(root, annotations, documentRef) {
   const committed = new Map(annotations.map(annotation => [annotation.id, annotation.content ?? '']));
   const pendingTextById = Object.create(null);
-  const pending = [{ fiber: root, turnId: null }];
+  const inputs = classicInputs(documentRef);
+  const ownedInputs = inputs?.size ? new Map() : null;
+  const pending = [{ fiber: root, turnId: null, turnOwner: null }];
   const visited = new Set();
-  while (pending.length && visited.size < 20000) {
-    const { fiber, turnId: inheritedId } = pending.pop();
+  while (pending.length && (inputs?.size || visited.size < 20000)) {
+    const { fiber, turnId: inheritedId, turnOwner: inheritedOwner } = pending.pop();
     if (!fiber || visited.has(fiber)) continue;
     visited.add(fiber);
     const props = fiber.memoizedProps;
     const turnId = typeof props?.turn?.id === 'string' ? props.turn.id : inheritedId;
+    const turnOwner = typeof props?.turn?.id === 'string' && props.handlers ? props : inheritedOwner;
+    const input = inputs?.get(fiber.stateNode);
+    if (input && turnOwner) {
+      const annotation = findCurrentAnnotation(annotations, turnId);
+      if (annotation && ownsClassicInput(fiber.stateNode, input, root, annotation, turnOwner)) {
+        ownedInputs.set(annotation.id, input);
+      }
+    }
     const slate = props?.editor;
     if (turnId && committed.has(turnId) && Array.isArray(slate?.children) &&
       typeof slate.apply === 'function' && typeof slate.insertData === 'function') {
@@ -356,7 +539,14 @@ function pendingNativeText(root, annotations) {
         if (text !== committed.get(turnId)) pendingTextById[turnId] = text;
       }
     }
-    for (let child = fiber.child; child; child = child.sibling) pending.push({ fiber: child, turnId });
+    for (let child = fiber.child; child; child = child.sibling) pending.push({ fiber: child, turnId, turnOwner });
+  }
+  if (ownedInputs) for (const [annotationId, input] of ownedInputs) {
+    const text = input.read().text;
+    // Old TTS Slate has plaintext paragraphs; do not apply modern tag-node
+    // serialization to its genuinely owned native editor.
+    delete pendingTextById[annotationId];
+    if (typeof text === 'string' && text !== committed.get(annotationId)) pendingTextById[annotationId] = text;
   }
   return pendingTextById;
 }
@@ -485,7 +675,7 @@ export function readBabelTranscriptBindings(documentRef = document) {
     reviewActionId: editor.memoizedProps.reviewActionId,
     readOnly: Boolean(editor.memoizedProps.readOnly || panel.readOnly || transcript.readOnly),
     annotations: panel.annotations,
-    pendingTextById: pendingNativeText(editor, panel.annotations),
+    pendingTextById: pendingNativeText(editor, panel.annotations, documentRef),
     tracks: panel.tracks,
     panel,
     transcript,

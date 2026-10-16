@@ -47,11 +47,39 @@ export interface BabelNativeTurnIdentity extends BabelNativeSessionState {
 }
 /** MAIN world only; current annotation metadata without Slate text or selection. */
 export declare function readBabelTurnIdentity(annotationId: string, documentRef?: Document): BabelNativeTurnIdentity | null;
+/** Genuine September input state; operations remain owned by the live native task. */
+export interface BabelClassicInput {
+  readonly annotation: BabelNativeAnnotation;
+  readonly reviewActionId: string;
+  readonly handlers: BabelNativeTranscriptBindings['transcript']['handlers'];
+  readonly readOnly: boolean;
+  readonly element: HTMLElement | null;
+  readonly autocomplete: {
+    state: { isOpen: boolean; suggestions: { type?: string }[]; highlightedIndex: number };
+    setHighlightedIndex(index: number): void;
+    selectSuggestion(index: number): void;
+    dismiss(): void;
+  } | null;
+  read(): { text: string; start: number; end: number; direction: 'none' | 'forward' | 'backward'; composing: boolean; editor: unknown };
+  flush(): boolean;
+  batchNative(callback: () => void): void;
+  replace(text: string, options?: { start?: number; end?: number; direction?: string; focus?: boolean }): boolean;
+  select(start: number, end?: number, direction?: string, focus?: boolean): boolean;
+  page(direction: 'up' | 'down', extend: boolean): boolean;
+  rects(start: number, end?: number): DOMRect[];
+  offsetAtPoint(x: number, y: number): number | null;
+}
+export declare function registerBabelClassicInput(row: HTMLElement, input: BabelClassicInput): () => void;
+export declare function readBabelClassicInput(annotationId: string, documentRef?: Document): {
+  row: HTMLElement; input: BabelClassicInput; annotation: BabelNativeAnnotation; readOnly: boolean;
+} | null;
+/** Validates every pending native draft before flushing any; false blocks the action. */
+export declare function flushBabelClassicInputs(documentRef?: Document): boolean;
 export interface BabelNativeTranscriptBindings {
   reviewActionId: string;
   readOnly: boolean;
   annotations: readonly BabelNativeAnnotation[];
-  /** Live Slate text not yet committed by its native debounce; raw tag syntax preserved. */
+  /** Live native Slate or captured Classic input text pending its owned debounce. */
   pendingTextById: Readonly<Record<string, string>>;
   tracks: readonly { id: string; label: string; [key: string]: unknown }[];
   panel: {
