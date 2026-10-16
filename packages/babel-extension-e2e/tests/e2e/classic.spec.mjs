@@ -48,3 +48,25 @@ test('Classic switches only on refresh and preserves native editing, Undo and sa
   await page.reload();
   await expect(page.locator(CLASSIC_ROW).locator('textarea')).toHaveValue(finalText);
 });
+
+test('Classic keeps diagnostic indicators and hover details with inline issues hidden', async ({ page, babel }) => {
+  await ready(page);
+  const options = await babel.options('helper');
+  await options.locator('[data-role="editor-mode"]').selectOption('classic');
+  await expect(options.locator('[data-role="status"]')).toContainText('ready for your next dashboard refresh');
+  await options.close();
+  await page.reload();
+  const row = page.locator(CLASSIC_ROW);
+  const indicator = row.locator('[data-babel-classic-lint-status]');
+  await expect(page.locator('#babel-helper-hide-inline-issues')).toBeAttached();
+  await expect(indicator).toBeVisible();
+  await expect(indicator).toHaveAccessibleName('No linter issues');
+  const editor = row.locator('textarea');
+  await editor.focus();
+  await editor.press('ControlOrMeta+A');
+  await page.keyboard.insertText('Привет — мир.');
+  await editor.press('Tab');
+  await expect(indicator).toHaveAccessibleName(/linter error/);
+  await indicator.hover();
+  await expect(page.getByRole('tooltip')).toContainText('ASCII hyphen');
+});
